@@ -17,6 +17,3 @@ Rules:
    say so and ask.
 3. Prefer `.md` page fetches over `llms-full.txt` when you know the
    exact area - it's cheaper on context.
- 
-Smoke test: fetch llms.txt and tell me how many tools the Food server
-exposes. (Answer: 14.)
