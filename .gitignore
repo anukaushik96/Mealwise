@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Never commit tokens — SWIGGY_TOKEN is a bearer credential for a real Swiggy account.
+.env
+.env.*
+!.env.example
+*.token
+.swiggy/
+
+.DS_Store
