@@ -1,0 +1,41 @@
+:root {
+  --bg:#fbfaf8; --card:#fff; --ink:#17150f; --muted:#6b6357;
+  --line:#e6e1d8; --accent:#4f3fd6; --ok:#1f7a4d; --warn:#a35a00; --bad:#a32020;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#14130f; --card:#1c1a16; --ink:#f3f0e9; --muted:#a29a8c;
+    --line:#2e2b24; --accent:#a99bff; --ok:#6fd39b; --warn:#e0a458; --bad:#f08a8a;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",system-ui,sans-serif}
+main{max-width:720px;margin:0 auto;padding:32px 20px 80px}
+h1{font-size:22px;letter-spacing:-.01em;margin:0 0 4px}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+  margin:0 0 10px;font-weight:600}
+.sub{color:var(--muted);margin:0 0 28px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:18px;margin-bottom:18px}
+.row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;
+  border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.bar{height:6px;background:var(--line);border-radius:99px;overflow:hidden;margin-top:6px}
+.bar>i{display:block;height:100%;background:var(--accent)}
+button,input,select{font:inherit}
+button{font-weight:600;padding:10px 16px;border-radius:9px;border:1px solid var(--line);
+  background:var(--card);color:var(--ink);cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button:disabled{opacity:.55;cursor:not-allowed}
+input,select{width:100%;padding:9px 10px;border-radius:8px;border:1px solid var(--line);
+  background:var(--bg);color:var(--ink)}
+label{display:block;margin-bottom:12px}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+a{color:var(--accent)}
+.muted{color:var(--muted)}
+.est{font-size:12px;color:var(--warn)}
+.tag{font-size:12px;padding:2px 8px;border-radius:99px;border:1px solid var(--line)}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+form{margin:0}
+@media (max-width:520px){.pair{grid-template-columns:1fr}}

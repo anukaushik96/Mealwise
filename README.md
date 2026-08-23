@@ -1,141 +1,165 @@
-# swiggy-mcp-budget
+# Mealwise
 
-Ordering capability for **Swiggy Food** and **Swiggy Instamart** over MCP.
+AI food & spending manager on Swiggy MCP. Answers two questions together — *is this good
+for me* and *can I afford it* — then orders the answer on Instamart.
 
-Both journeys are implemented against the authoritative per-tool reference pages at
-`mcp.swiggy.com/builders`, including the shared UPI payment stage driven headlessly
-(no widget host, so this client owns the poll loop and the finalisation).
+**Python throughout**: FastAPI + Jinja2 on Vercel, Postgres (Neon), Claude `claude-opus-5`,
+plus a terminal client for the same Swiggy API. Multi-user.
 
 ## Layout
 
-| File | Purpose |
+| Path | |
 | --- | --- |
-| `src/session.ts` | MCP session per server (`/food`, `/im`) + envelope unwrapping |
-| `src/envelope.ts` | Shared `{success, data, message}` envelope and typed errors |
-| `src/payment.ts` | Shared UPI stage: options → place → poll → confirm |
-| `src/food.ts` | Food ordering flow |
-| `src/instamart.ts` | Instamart ordering flow |
-| `src/common.ts` | Address handling, ₹1000 ceiling, ₹99 Instamart minimum |
-| `scripts/login.ts` | OAuth 2.1 + PKCE login (DCR → consent → token) |
-| `scripts/dump-schemas.ts` | Dump live `inputSchema` for every tool |
+| `mealwise/swiggy/` | Swiggy MCP client — Food + Instamart, verified against the live server |
+| `mealwise/cli/` | Terminal ordering: `login`, `order`, `basket`, `dump_schemas` |
+| `mealwise/web/` | The FastAPI app (routes, Jinja2 templates, CSS) |
+| `mealwise/ai/` | Nutrition estimation and the recommendation engine |
+| `mealwise/{history,budget,targets,common}.py` | Pure logic — all unit-tested |
+| `mealwise/{db,store,crypto,session,auth,config}.py` | Persistence, tokens, OAuth |
+| `api/index.py` | Vercel entrypoint (ASGI) |
+| `schema.sql` | 7 tables |
+| `tests/` | 49 tests, no network needed |
 
-## Usage
+## Setup
 
 ```bash
-npm install
-npm run login              # phone + OTP in the browser, prints a token
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env            # fill in DATABASE_URL and ANTHROPIC_API_KEY
+python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"   # x2
+psql "$DATABASE_URL" -f schema.sql
+.venv/bin/python -m uvicorn api.index:app --reload      # http://localhost:8000
+```
+
+Tests: `python -m unittest discover -s tests -t .`
+
+### Vercel
+
+Import the repo — `vercel.json` routes everything to `api/index.py`. Add the five env
+vars, and set `APP_URL` to the production origin so Swiggy redirects back correctly.
+
+## The terminal client
+
+The same verified client, without the web app:
+
+```bash
+python -m mealwise.cli.login                          # phone + OTP, prints a token
 export SWIGGY_TOKEN=...
+python -m mealwise.cli.order  dahi                    # search only
+python -m mealwise.cli.order  dahi --pick=1 --qty=2   # one search, one or more lines
+python -m mealwise.cli.basket 5V35CLXB8O:1 Q3L8WG2OTP:1        # a real grocery list
+python -m mealwise.cli.basket 5V35CLXB8O:1 --place --max-total=258
+python -m mealwise.cli.dump_schemas                   # authoritative tool schemas
 ```
 
-```ts
-import { connectSwiggy } from "./src/index.js";
+`--max-total` is not decoration: Instamart pricing is live, and a surge fee appeared, was
+renamed and lapsed inside a single session. It pins the approval to a number and aborts
+above it rather than paying more than was agreed.
 
-const swiggy = await connectSwiggy(process.env.SWIGGY_TOKEN!);
+## Live server vs. the docs
 
-// --- Instamart -----------------------------------------------------------
-const [home] = await swiggy.instamart.addresses();
-const found = await swiggy.instamart.searchProducts({ addressId: home.id, query: "bananas" });
+Everything below was verified by calling `mcp.swiggy.com` with a real token. Where the
+docs and the server disagree, **this code follows the server**. Re-verify with
+`python -m mealwise.cli.dump_schemas`.
 
-// You add VARIATIONS to the cart, not the parent product.
-const spinId = found.products?.[0]?.variations?.[0]?.spinId;
+**The envelope is asymmetric, and the docs describe only half of it.** This was the
+single blocking bug — every read failed until it was fixed.
 
-await swiggy.instamart.updateCart({
-  selectedAddressId: home.id,
-  items: [{ spinId: spinId!, quantity: 2 }],
-});
+| | `structured_content` |
+| --- | --- |
+| success | the **bare payload** — no `success`, no `data` wrapper |
+| failure | the documented wrapper plus a report id: `{success: false, error: {message, reportId, reportHint}}` |
 
-const cart = await swiggy.instamart.getCart();
-// → show the cart, the address and the payment methods, and get a real "yes"
+So failure is keyed off `success is False`, never off a falsy `success`. The same trap sat
+in the payment poll, where a successful status read would have been raised as an error.
 
-const options = await swiggy.instamart.paymentOptions();
-const result = await swiggy.instamart.checkout({
-  address: home,
-  payment: { kind: "cash" },
-  userConfirmed: true,
-});
+**The text content block is human-readable prose, not JSON** — "Found 23 saved addresses
+(page 1 of 3…)". Never parse it.
 
-if (result.kind === "awaiting-payment") {
-  console.log(`Pay here: ${result.pending.bridgeUrl}`);
-  const outcome = await result.settle();          // capped polling + confirm
-  console.log(outcome.outcome);                    // "placed" | "failed" | "timeout"
-}
+**Response field names.** The docs name almost none of these, and several published names
+are wrong:
 
-await swiggy.close();
-```
+| Docs / assumed | Live server |
+| --- | --- |
+| product `name` | **`displayName`** |
+| variation `quantity` / `weight` | **`quantityDescription`** ("500 ml x 4") |
+| variation `price` (number) | **object** `{mrp, offerPrice, unitLevelPrice}` |
+| variation `inStock` | **`isInStockAndAvailable`** |
+| — | **`maxQuantity`** — a server-enforced per-order cap |
+| payment method `label` | **`displayName`** (plus `groupName`, `enabled`) |
+| `cod: {paymentMethod, label}` | **`{available, id, displayName}`** |
+| cart total (unnamed) | **`cartTotalAmount`** (a *string*) and **`billBreakdown.toPay`** |
 
-Food is the same shape: `searchRestaurants` → `restaurantMenu` → `updateCart`
-→ `getCart` → `paymentOptions(addressId)` → `placeOrder` → `track`.
+**Order history is formatted for display.** `orderTotal` is `"₹310"`, `orderedItems` is one
+joined string, `orderedTime` is `"August 22, 10:13 PM"` with **no year**. Consequences:
+orders store a DATE plus the raw string, and there is **no per-item price** — order-level
+totals are the only trustworthy money figure, so per-dish spend attribution is impossible.
+
+**`get_addresses` paginates and has no coordinates.** `pageSize` caps at 10, so an account
+with 23 addresses silently returns the first 10 unless you walk `pagination.hasMore`. Each
+address carries only `{id, addressLine, phoneNumber, addressCategory, addressTag}` — no
+`lat`/`lng` and no `label`. Since `track_order` *requires* lat/lng, they must come from
+`get_cart.selectedAddressDetails`.
+
+**`get_food_orders` requires `addressId`** and returns `{}` — not an error — without it.
+History is account-wide regardless of which address you pass.
+
+**Instamart advertises 14 tools, not the 16 or 19 the docs imply.** `list_coupons` and
+`apply_coupon` are unadvertised but callable, returning "Coupon tools are not enabled for
+your account yet" — surfaced as a value, not an exception, so an un-whitelisted account can
+still order. `create_address`, `delete_address` and `get_order_details` are neither
+advertised nor verified. Food advertises 18, and every tool name the client uses exists.
+
+**Fee thresholds, measured across six basket sizes.** A ₹20 small-cart fee applies below
+~₹99 of goods, and delivery is free above ~₹199. A *larger* basket genuinely cost *less*
+(₹113 of goods billed ₹160; ₹91 billed ₹162). The recommendation prompt knows about these.
+
+**Other hard limits.** Orders of ₹1000+ are refused while MCP is in beta. `checkout` is not
+idempotent — reconcile with `get_orders` rather than retrying. UPI cannot be completed
+without a human; Cash-on-delivery can.
 
 ## Design notes
 
-**Explicit confirmation is enforced by the type system.** `placeOrder` and `checkout`
-both require `userConfirmed: true` as a literal, so neither can be reached by
-defaulting. The docs are emphatic that these are never called without the user having
-seen the cart, the payment method and the delivery address, and agreed.
+**Connecting Swiggy is signing in.** The access token is a JWT whose `sub` is stable per
+account, so it doubles as identity — no separate password system, and multi-user from day
+one. Tokens are AES-256-GCM encrypted at rest, because a read-only database leak would
+otherwise be enough to order on every connected account.
 
-**The two servers confirm payments differently.** This is the sharpest edge in the API:
+**Money paths are gated twice.** `checkout` takes `user_confirmed=True` as a literal, and
+the order route re-reads the live cart total against the ceiling the human approved.
 
-| | `check_payment_status` | `confirm_order` |
-| --- | --- | --- |
-| Food | `paasId` + `orderId` + `addressId` + `lat` + `lng` | `orderId` + `addressId` + `lat` + `lng` |
-| Instamart | `paasId` + `orderId` | `orderId` + `paasId` |
+**UPI payment is not polled.** `check_payment_status` runs up to ~18 minutes and a Vercel
+function is capped far below that, so the app hands over the payment link and stops. Cash
+completes in-request. A durable job or client-side polling would be the way to close this.
 
-Food *requires* the geo echo — omit it and the server cannot reconcile the order, so it
-stays stuck pending. `src/payment.ts` models this as a `PaymentBinding` so the two can
-never be crossed.
+**Nutrition is estimated, and says so.** It is inferred by an LLM from item-name strings,
+with a per-item confidence that the UI surfaces. Not medical advice.
 
-**Payment outcome is read off `data.status`, not `success`.** A terminal payment
-*failure* is still a successful status read and returns `success: true`. Only a
-transport error (bad `paasId`) uses the failure envelope.
-
-**Polling is capped and gentle.** `check_payment_status` is a ~19s long-poll; the loop
-honours `pollingIntervalInMs` / `maxTimeToPollForInMs` from the place-order response and
-never tight-loops. On reaching the cap while still pending it calls `confirm_order`
-exactly once, which is the documented way to finalise.
-
-**Place-order is not idempotent.** A `success: false` envelope is deterministic and
-rethrown as-is. Any other failure (5xx, socket) raises
-`SwiggyIndeterminateOrderError`, which names the tool to reconcile with
-(`get_food_orders` / `get_orders`) instead of inviting a blind retry that could
-double-order.
-
-## Documentation discrepancies
-
-The build recipes contradict the per-tool reference pages in several places. **This code
-follows the reference pages**, which match the tool descriptions the servers themselves
-return. Following the recipes verbatim produces calls that fail.
-
-| Recipe says | Reference page says |
-| --- | --- |
-| `order-groceries`: `results.data.products[0].variants[0].spinId` | the field is **`variations`** |
-| `order-groceries`: `update_cart({ items })` | **`selectedAddressId` is required** |
-| `order-groceries`: `checkout({ paymentMethod: "COD" })` | **`addressId` required**; values are **`"UPI"` / `"Cash"`** — there is no `"COD"` |
-| `order-food`: `update_food_cart({ items: [...] })` | the parameter is **`cartItems`**, and **`addressId` is required** |
-| `order-food`: `get_restaurant_menu({ restaurantId })` | **`addressId` is required** too |
-
-Also worth knowing: the Food index page reports "17 tools" while 18 tool pages exist
-under `/docs/reference/food/`. The extra one is `get_food_delivery_status`, which is
-widget-only and omitted from the stage tables.
-
-### Known gap: `update_food_cart`'s `cartItems`
-
-The element shape is **not documented anywhere**, including `llms-full.txt`. The
-parameter table types it as bare `object[]`, and every published example — TypeScript,
-Python and curl — passes an empty array. `FoodCartItem` is therefore left open rather
-than invented.
-
-Resolve it against the live server before building the Food cart step:
-
-```bash
-SWIGGY_TOKEN=... npm run dump-schemas -- update_food_cart
-```
-
-`tools/list` returns each tool's real JSON Schema, which is authoritative.
+**The agent cannot invent a product.** It picks only from a candidate list fetched live from
+Instamart, and unknown `spinId`s are filtered before the cart call.
 
 ## Status
 
-⚠️ **Unverified.** This was written against the docs but never compiled or executed:
-the machine it was authored on has no Node installed and its system Python is 3.9.6
-(below the MCP Python SDK's 3.10 floor). Before trusting it, run `npm run typecheck`,
-then exercise the flows against a real token — starting with `dump-schemas` to confirm
-the argument shapes.
+`python -m unittest discover -s tests -t .` — **49 tests pass**, covering the history
+parsers against captured live strings, the budget engine, target derivation, and the cart
+probes. No network needed.
+
+Verified against a running server: the signed-out page, the PKCE-S256 authorize redirect,
+the `/onboarding` guard, static assets, and `/healthz`.
+
+⚠️ **Not yet exercised end to end.** No database has been attached, so nothing past the
+login boundary has executed — import, nutrition estimation, recommendation, cart and order
+all compile and are typed but have never run. No Claude API call has been made at all.
+
+Two things to test on the first real deploy, either of which could still require rework:
+
+1. Whether Swiggy's `/authorize` honours a hosted `redirect_uri`. DCR accepts one, but it
+   echoes whatever you send and always returns `client_id: "swiggy-mcp"`, so enforcement
+   may only happen at `/authorize`.
+2. Whether a `refresh_token` is actually issued. It is advertised in
+   `grant_types_supported` but has never been seen in a response. Without it, users
+   reconnect every ~5 days.
+
+**Known gaps.** The delivery address is hardcoded to the first one returned — there is no
+picker. Recommendation search terms are a fixed list keyed off which target is short. No
+conversational interface, no weekly insights, no restaurant (Food) ordering, and the
+behavioural spending insights are limited to a per-source split.

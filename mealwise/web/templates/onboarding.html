@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block tagline %}A few things about you — enough to make the first recommendation useful.{% endblock %}
+{% block content %}
+<form method="post" action="/onboarding">
+  <div class="card">
+    <h2>You</h2>
+    <div class="pair">
+      <label>Age
+        <input name="age_years" inputmode="numeric" value="{{ form.age_years or 29 }}" required>
+      </label>
+      <label>Sex <span class="muted">(for the calorie maths)</span>
+        <select name="sex">
+          {% for value, text in [("male","Male"),("female","Female"),("other","Prefer not to say")] %}
+            <option value="{{ value }}" {% if form.sex == value %}selected{% endif %}>{{ text }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Height (cm)
+        <input name="height_cm" inputmode="numeric" value="{{ form.height_cm or 175 }}" required>
+      </label>
+      <label>Weight (kg)
+        <input name="weight_kg" inputmode="decimal" value="{{ form.weight_kg or 75 }}" required>
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Goal and diet</h2>
+    <label>Health goal
+      <select name="goal">
+        {% for value, text in goals %}
+          <option value="{{ value }}" {% if form.goal == value %}selected{% endif %}>{{ text }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Diet
+      <select name="diet">
+        {% for value in diets %}
+          <option value="{{ value }}" {% if form.diet == value %}selected{% endif %}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="pair">
+      <label>Allergies <span class="muted">(comma separated)</span>
+        <input name="allergies" placeholder="peanuts, shellfish" value="{{ form.allergies or '' }}">
+      </label>
+      <label>Foods you dislike
+        <input name="dislikes" placeholder="karela, olives" value="{{ form.dislikes or '' }}">
+      </label>
+    </div>
+    <p class="muted" style="font-size:13px;margin:0">
+      Allergies are treated as absolute — nothing containing them is ever recommended.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>Budget</h2>
+    <label>Monthly food budget (₹)
+      <input name="budget_inr" inputmode="numeric" value="{{ form.budget_inr or 15000 }}" required>
+    </label>
+  </div>
+
+  <button class="primary" type="submit">Save and continue</button>
+</form>
+{% endblock %}

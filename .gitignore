@@ -1,12 +1,22 @@
-node_modules/
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
 dist/
-*.tsbuildinfo
 
-# Never commit tokens — SWIGGY_TOKEN is a bearer credential for a real Swiggy account.
+# Secrets — these are live credentials that can spend real money.
 .env
 .env.*
 !.env.example
 *.token
 .swiggy/
 
+# Tooling
+.vercel
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .DS_Store

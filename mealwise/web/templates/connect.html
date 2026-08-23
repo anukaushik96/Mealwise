@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Get started</h2>
+  <p class="muted">
+    Connecting Swiggy signs you in and lets Mealwise read your order history — that
+    history is what it learns your nutrition and spending from.
+  </p>
+  <form method="get" action="/auth/connect">
+    <button class="primary" type="submit">Connect Swiggy</button>
+  </form>
+</div>
+{% endblock %}
