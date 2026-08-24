@@ -7,14 +7,18 @@ would clobber each other. Instead we measure the fee overhead once, then
 project every add locally (instant, no network), and reconcile with the
 server before checkout, which is the only irreversible step.
 
-The projection is sound because Swiggy's fees are flat rupee amounts
-(handling, packaging, late-night, delivery) - only GST scales, and it
-scales with the fees, not the items.
+The projection is only ever provisional. It assumes the fee overhead measured
+on the last real cart read still applies, and that assumption is not free:
+measured fee load has ranged from 4% to 123% of the item total, and the SET of
+fee lines changes with cart value and time of day, so a surge fee can appear
+between two identical carts. Hence the rule this module is built around - the
+projection guides shopping, and the server's own toPay decides checkout.
 """
 
 import re
 
 from money import parse_paise, rupees
+from swiggy_mcp import guard, tool_data
 
 # checkout is refused at or above ₹1000, so the largest payable cart is ₹999.
 CHECKOUT_LIMIT_PAISE = 100000
@@ -66,11 +70,23 @@ class BudgetStatus(object):
         return self.projected >= CHECKOUT_LIMIT_PAISE
 
     def message(self):
-        if self.ok:
+        if self.ok and self.measured:
             return "Projected total %s (items %s + fees %s) - %s of headroom." % (
                 rupees(self.projected), rupees(self.item_total),
                 rupees(self.fees), rupees(self.headroom))
-        qualifier = "" if self.measured else " (fees still estimated)"
+        if self.ok:
+            # Say what is known - the item total - and do not dress it up as a
+            # total. Fees are not estimable: they have ranged from 4% to 123%
+            # of items, and the set of fee lines moves with cart value and time
+            # of day. Until the server prices a cart there is no fee to report.
+            return ("Items come to %s so far. Swiggy has not priced the fees for "
+                    "this cart yet, so this is not the total - %s of room under "
+                    "%s before fees are added."
+                    % (rupees(self.item_total), rupees(self.headroom),
+                       rupees(self.limit)))
+        qualifier = ("" if self.measured
+                     else " Swiggy has not priced the fees yet, so the real total "
+                          "will be higher.")
         if self.breaches_checkout_limit:
             # Swiggy itself will refuse this one.
             if self.over_by > 0:
@@ -154,6 +170,107 @@ def parse_address_list(payload):
     """get_addresses returns prose only - no JSON - so parse "(ID: ...)"."""
     text = (payload or {}).get("_text", "")
     return [(label.strip(), aid) for label, aid in _ADDRESS_LINE.findall(text)]
+
+
+def fetch_all_addresses(client):
+    """Every saved address as [(label, addressId)].
+
+    get_addresses is prose-only and paginated at 10 per page, and it tells you
+    there is more by printing "Use page=N" rather than in a field - so paging
+    means reading the prose. Capped at 10 pages so a server that always claims
+    another page cannot spin here forever.
+    """
+    collected, page = [], 1
+    while page <= 10:
+        payload = guard(client.call_tool("get_addresses",
+                                        {"page": page, "pageSize": 10}), "get_addresses")
+        found = parse_address_list(payload)
+        if not found:
+            break
+        collected.extend(found)
+        if "Use page=%d" % (page + 1) not in (payload.get("_text") or ""):
+            break
+        page += 1
+    seen, unique = set(), []
+    for label, aid in collected:
+        if aid not in seen:
+            seen.add(aid)
+            unique.append((label, aid))
+    return unique
+
+
+def flatten_variations(products, limit=6):
+    """One selectable row per in-stock variation across the first `limit` products.
+
+    Both spinId and skuId are carried: spinId is the global catalogue id and
+    skuId is that variant's stock at the serving store, so neither substitutes
+    for the other in a cart write.
+    """
+    rows = []
+    for product in products[:limit]:
+        for var in product.get("variations", []) or []:
+            if not var.get("isInStockAndAvailable"):
+                continue
+            price = parse_paise((var.get("price") or {}).get("offerPrice"))
+            mrp = parse_paise((var.get("price") or {}).get("mrp"))
+            if price is None:
+                price = mrp
+            if price is None:
+                continue
+            rows.append({
+                "spinId": var.get("spinId"), "skuId": var.get("skuId"),
+                "name": var.get("displayName") or product.get("displayName") or "?",
+                "brand": var.get("brandName") or product.get("brand") or "",
+                "variant": var.get("quantityDescription") or "",
+                "price": price, "mrp": mrp,
+                "maxQuantity": var.get("maxQuantity"),
+                "promoted": bool(product.get("isPromoted")),
+                # Undocumented but present on every variation observed
+                # (206/206), always https on media-assets.swiggy.com.
+                "image": var.get("imageUrl"),
+                # "6.8/100 ml" - the one figure that makes two different pack
+                # sizes comparable, which is exactly the choice being made.
+                "unitPrice": (var.get("price") or {}).get("unitLevelPrice"),
+            })
+    return rows
+
+
+def search_rows(client, address_id, query, limit=6):
+    """Search one query and return selectable rows, falling back to similars.
+
+    Returns (rows, used_similar). search_products requires addressId, and the
+    skuIds it hands back are only valid for THAT address.
+    """
+    found = guard(client.call_tool("search_products",
+                                  {"addressId": address_id, "query": query}),
+                  "search_products")
+    rows = flatten_variations(tool_data(found, "products") or [], limit)
+    if rows:
+        return rows, False
+    return flatten_variations(tool_data(found, "similarProducts") or [], limit), True
+
+
+def cart_write_warnings(payload):
+    """Things update_cart silently changed about what we asked for.
+
+    The response reports capped quantities in reducedQuantityItems and dropped
+    items in removedOutOfStockItems. Neither is an error, so a caller that only
+    checks success:false will show the user a cart that is not what they built.
+    """
+    warnings = []
+    for item in (tool_data(payload, "reducedQuantityItems") or []):
+        if not isinstance(item, dict):
+            continue
+        warnings.append("%s was reduced to %s%s" % (
+            item.get("itemName") or item.get("name") or "an item",
+            item.get("quantity", "?"),
+            " (%s)" % item["reason"] if item.get("reason") else ""))
+    for item in (tool_data(payload, "removedOutOfStockItems") or []):
+        if not isinstance(item, dict):
+            continue
+        warnings.append("%s was removed - out of stock" % (
+            item.get("itemName") or item.get("name") or "an item"))
+    return warnings
 
 
 def cart_item_total(cart):

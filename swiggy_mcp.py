@@ -88,6 +88,42 @@ def split_prose_and_json(text):
     return text.strip(), None
 
 
+def guard(payload, label):
+    """Raise on a tool-level failure instead of silently carrying on.
+
+    A Swiggy tool can fail two ways: a JSON-RPC error (which _rpc already
+    raises on) or a 200 response carrying isError/success:false. Only the
+    second needs catching here, and it must be caught - an unguarded
+    "success": false reads as an empty result and the caller carries on with
+    a cart it never actually wrote.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    if payload.get("_isError") or payload.get("success") is False:
+        message = ((payload.get("error") or {}).get("message")
+                   or payload.get("_text") or "unknown error")
+        raise McpError("%s failed: %s" % (label, str(message)[:300]))
+    return payload
+
+
+def tool_data(payload, key, default=None):
+    """Read a field that may sit at the top level or under "data".
+
+    The docs describe every tool as returning {success, data:{...}}, but what
+    actually arrives is prose with a JSON object appended, and that object has
+    been observed both wrapped and unwrapped. Look in both rather than betting
+    on either.
+    """
+    if not isinstance(payload, dict):
+        return default
+    if key in payload:
+        return payload[key]
+    data = payload.get("data")
+    if isinstance(data, dict) and key in data:
+        return data[key]
+    return default
+
+
 class SwiggyMcp:
     def __init__(self, token, server="instamart", timeout=60):
         self.url = SERVERS[server] if server in SERVERS else server

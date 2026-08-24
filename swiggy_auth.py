@@ -36,6 +36,7 @@ REDIRECT_URI = "http://%s:%d/callback" % (REDIRECT_HOST, REDIRECT_PORT)
 #   ~/.swiggy_mcp/                 0700
 #     current                      user id of the active account
 #     sessions/<user_id>.json      0600, one per Swiggy account
+#     prefs/<user_id>.json         0600, UI preferences (last address used)
 #     probe/                       diagnostic dumps (addresses, orders)
 #
 # Sessions are kept per account so two people alternating on one machine do
@@ -46,6 +47,7 @@ TOKEN_DIR = os.environ.get("SWIGGY_MCP_HOME") or os.path.join(
 SESSIONS_DIR = os.path.join(TOKEN_DIR, "sessions")
 CURRENT_FILE = os.path.join(TOKEN_DIR, "current")
 PROBE_DIR = os.path.join(TOKEN_DIR, "probe")
+PREFS_DIR = os.path.join(TOKEN_DIR, "prefs")
 
 _LEGACY_SINGLE_FILE = os.path.join(TOKEN_DIR, "token.json")
 _LEGACY_REPO_FILE = os.path.join(
@@ -82,12 +84,13 @@ def discover():
         return json.loads(resp.read().decode("utf-8"))
 
 
-def register_client(meta, client_name="swiggy-mcp-budget"):
+def register_client(meta, client_name="swiggy-mcp-budget", redirect_uris=None):
     return _post_json(
         meta["registration_endpoint"],
         {
             "client_name": client_name,
-            "redirect_uris": [REDIRECT_URI, "http://localhost:%d/callback" % REDIRECT_PORT],
+            "redirect_uris": redirect_uris or
+                [REDIRECT_URI, "http://localhost:%d/callback" % REDIRECT_PORT],
             "grant_types": ["authorization_code"],
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
@@ -183,13 +186,13 @@ def authorize_interactive(meta, client_id, wait_seconds=300):
     return captured["code"], verifier
 
 
-def exchange_code(meta, client_id, code, verifier):
+def exchange_code(meta, client_id, code, verifier, redirect_uri=None):
     return _post_json(
         meta["token_endpoint"],
         {
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": REDIRECT_URI,
+            "redirect_uri": redirect_uri or REDIRECT_URI,
             "client_id": client_id,
             "code_verifier": verifier,
         },
@@ -198,7 +201,7 @@ def exchange_code(meta, client_id, code, verifier):
 
 
 def _ensure_dirs():
-    for path in (TOKEN_DIR, SESSIONS_DIR, PROBE_DIR):
+    for path in (TOKEN_DIR, SESSIONS_DIR, PROBE_DIR, PREFS_DIR):
         if not os.path.isdir(path):
             os.makedirs(path, 0o700)
         os.chmod(path, 0o700)
@@ -335,6 +338,112 @@ def cached_user_id():
     return (cached or {}).get("user_id")
 
 
+def store_token(token, client_id):
+    """Persist a token response as the active session; returns the record."""
+    record = dict(token)
+    record["client_id"] = client_id
+    record["obtained_at"] = time.time()
+    record["expires_at"] = time.time() + float(token.get("expires_in", 5 * 24 * 3600))
+    _save(record)
+    return record
+
+
+# ---------- split (non-blocking) authorization, for a server front end ----------
+#
+# authorize_interactive() cannot be reused by an HTTP front end: it blocks for
+# up to 300s waiting on a redirect that its OWN process must serve, so calling
+# it from inside a request handler deadlocks the handler against itself.
+#
+# So the flow splits in two - begin_login() builds the URL and hands back the
+# PKCE verifier, finish_login() completes the exchange when Swiggy redirects
+# back. This is the shape section 9 of INSTAMART_NOTES.md says production
+# access will force (two requests, a persisted verifier, no print()); the only
+# development-mode part left is that the redirect URI is still a loopback one.
+# Nothing below is new protocol - it reuses discover/register_client/make_pkce/
+# exchange_code, which are already verified against the live server.
+
+
+def begin_login(redirect_uri, client_name="swiggy-mcp-budget"):
+    """Register, build the authorize URL, and return the state to carry over.
+
+    The caller MUST keep the returned dict (keyed by its "state") until Swiggy
+    redirects back, and MUST compare the returned state before exchanging -
+    that comparison is the only thing standing between this and CSRF.
+    """
+    meta = discover()
+    registration = register_client(meta, client_name, redirect_uris=[redirect_uri])
+    client_id = registration.get("client_id")
+    if not client_id:
+        raise AuthError("registration returned no client_id: %s" % registration)
+
+    verifier, challenge = make_pkce()
+    state = secrets.token_urlsafe(16)
+    query = urllib.parse.urlencode({
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": SCOPES,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    })
+    return {
+        "auth_url": "%s?%s" % (meta["authorization_endpoint"], query),
+        "state": state,
+        "verifier": verifier,
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "meta": meta,
+        "started_at": time.time(),
+    }
+
+
+def finish_login(pending, code):
+    """Exchange the code from the redirect and store the session."""
+    token = exchange_code(pending["meta"], pending["client_id"], code,
+                          pending["verifier"], redirect_uri=pending["redirect_uri"])
+    if not token.get("access_token"):
+        raise AuthError("token endpoint returned no access_token: %s" % token)
+    return store_token(token, pending["client_id"])
+
+
+def cached_token(user_id=None):
+    """The stored access token if it is still comfortably valid, else None."""
+    record = _load(user_id)
+    if not record or not record.get("access_token"):
+        return None
+    if record.get("expires_at", 0) - 120 <= time.time():
+        return None
+    return record["access_token"]
+
+
+# ---------- per-account UI preferences ----------
+#
+# Which address someone last delivered to is personal data, so it lives beside
+# the session under the user's own home directory - never in the project
+# folder, which gets cloned, zipped and shared.
+
+def _prefs_path(user_id):
+    safe = "".join(ch for ch in str(user_id) if ch.isalnum() or ch in "-_")
+    return os.path.join(PREFS_DIR, "%s.json" % (safe or "unknown"))
+
+
+def load_prefs(user_id):
+    if not user_id:
+        return {}
+    return _read_json(_prefs_path(user_id)) or {}
+
+
+def save_prefs(user_id, prefs):
+    if not user_id:
+        return
+    _ensure_dirs()
+    path = _prefs_path(user_id)
+    with open(path, "w") as fh:
+        json.dump(prefs, fh, indent=2)
+    os.chmod(path, 0o600)
+
+
 def login(force=False, expect_user_id=None):
     """Return a usable access token, reusing the cached one when still valid.
 
@@ -373,11 +482,7 @@ def login(force=False, expect_user_id=None):
     if not token.get("access_token"):
         raise AuthError("token endpoint returned no access_token: %s" % token)
 
-    record = dict(token)
-    record["client_id"] = client_id
-    record["obtained_at"] = time.time()
-    record["expires_at"] = time.time() + float(token.get("expires_in", 5 * 24 * 3600))
-    _save(record)
+    record = store_token(token, client_id)
     print("Signed in as account %s; session stored in %s"
           % (record.get("user_id"), _session_path(record.get("user_id"))))
     return record["access_token"]

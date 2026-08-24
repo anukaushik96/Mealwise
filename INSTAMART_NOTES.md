@@ -47,6 +47,8 @@ this file is out of date. Fix it in place.
 | `instamart.py` | Cart planner, the ₹1000 limit maths, cart/fee helpers |
 | `parse_order.py` | Natural-language order sentence → items, sizes, counts |
 | `order_instamart.py` | The interactive ordering CLI |
+| `web_app.py` | The web UI: routes, session state, the split OAuth flow |
+| `web_ui.py` | HTML for the web UI - no JavaScript, anywhere |
 | `probe_instamart.py` | Read-only prober; dumps every tool's raw response |
 
 The §2 trust hierarchy is enforced in `instamart.py` — `cart_item_total()`
@@ -190,6 +192,20 @@ A natural-language order of `"1 L amul milk x 2 units"` parsed to **quantity
 No error anywhere. If you build an NL front end, assert that every parsed
 quantity is echoed back to the user before it reaches the cart.
 
+**Second instance of the same bug, found and fixed 2026-08-25.** `"2 maggi"`
+parsed to a product literally named *"2 maggi"* at quantity **1**: the digit
+leaked into the `search_products` query *and* the count vanished, silently, in
+one step. Cause: the quantity regex captured the word after the number
+unconditionally, so a following word that was not a unit made the whole match
+look like part of the name. `_QTY` now captures the gap too, and treats
+`"2 maggi"` (space, therefore a count) differently from `"7up"` (no space,
+therefore a brand) - see `parse_order._MAX_BARE_COUNT`.
+
+The lesson stands and is now enforced structurally: the web UI cannot search
+anything until the user has confirmed a screen listing every parsed name, size
+and quantity. Do not remove that screen to save a click - it is the assertion
+this section asks for.
+
 ---
 
 ## 2. Trust hierarchy
@@ -243,6 +259,9 @@ Discovery: `/.well-known/oauth-authorization-server` (the
 | `track_order(orderId)` | `lat` and `lng` are **required** |
 | `check_payment_status(paasId, orderId)` | Also `addressId`, `cartId`, `lat`, `lng`, `finalize` |
 | ₹99 minimum order | Never observed as a block; a ₹59 cart checked out fine. What actually happens below ~₹100 is a **₹20 Small Cart Fee** |
+| `search_products` variations hold `spinId`, `skuId`, `quantityDescription`, `displayName`, `price`, `isInStockAndAvailable`, `rating`, `sla`, `vegClassifier`, `maxQuantity` | Also **`imageUrl`** and **`price.unitLevelPrice`**, neither documented. `imageUrl` was present on **206/206** variations |
+| Money is a display string (`"₹234.00"`) | In `search_products` it is a **plain number** (`"mrp": 144`). Both forms are live, so parse both |
+| Nothing about who is signed in | There is **no way to learn the user's name.** The token carries `user_id` and `tid` only; `get_addresses` prose has no name; there is no profile tool |
 
 ---
 
@@ -297,6 +316,50 @@ Discovery: `/.well-known/oauth-authorization-server` (the
   `"Operation completed successfully."` Use `track_order`.
 - **Carts expire when abandoned.** A 4-item cart emptied itself between two
   probes with no call from us.
+- **`displayName` is usually already brand-prefixed.** Concatenating
+  `brandName + displayName` produces "Amul Amul Fresh Paneer" and "Mother
+  Dairy Mother Dairy Fresh Paneer" — but some rows carry a bare name, so the
+  brand cannot simply be dropped either. Prefix only when the name does not
+  already start with the brand.
+
+### 5.1 A saved address can serve nothing, and says so cheerfully
+
+**Verified 2026-08-25, and it will bite whoever picks a default address.** On a
+real account with 24 saved addresses, the **first** one — the one
+`get_addresses` returns first, i.e. the account default — returned:
+
+```
+Found 0 product(s) matching "milk".      success: true, no error, _isError: false
+```
+
+for *every* query tried, while every other address on the same account returned
+20 products for the same query at the same minute. The address is saved and
+valid; no store serves it.
+
+So **an empty `products` array is not evidence about stock.** It conflates "we
+have none of that" with "nobody delivers here", and the API gives you no field
+to tell them apart. If your product defaults to an address, probe it with a
+staple query before trusting it, and if a whole shopping list comes back empty,
+say the address may be unserved rather than "out of stock" — otherwise the app
+looks broken when it is working correctly.
+
+### 5.2 The image host resizes, undocumented
+
+`imageUrl` points at `media-assets.swiggy.com`, which is a **Cloudinary**
+delivery endpoint, and the catalogue serves full-size shots — one PNG measured
+**758 KB**, which is ~6 MB for a page of eight thumbnails. Inserting a
+transformation after `/image/upload/` resizes on the fly:
+
+```
+.../image/upload/w_96,h_96,c_fit,q_auto,f_auto/NI_CATALOG/IMAGES/...
+```
+
+Measured across four real URLs: **2.0 MB became 15.0 KB**, a 135× cut, every
+one HTTP 200. The assets are public — no `Authorization` header needed.
+
+**This is a CDN convention, not a Swiggy API.** Use it only where it is
+cosmetic. If Cloudinary ever rejects the transform, thumbnails break and
+nothing else does; the untransformed URL is what the API actually handed you.
 
 ---
 
