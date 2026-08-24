@@ -251,7 +251,31 @@ Discovery: `/.well-known/oauth-authorization-server` (the
 - **`update_cart` uses `selectedAddressId`.** Every other tool uses
   `addressId`. This inconsistency is real, not a typo in the docs.
 - **Cart items need BOTH `spinId` and `skuId`**, plus `quantity`. Both come
-  from `variations[]` in a search result.
+  from `variations[]` in a search result. They are not interchangeable and
+  they are not redundant — **verified 2026-08-25** by searching the same
+  product from a Gurugram and a Bengaluru address:
+
+  | | Gurugram | Bengaluru | |
+  |---|---|---|---|
+  | `spinId` | `TYF3262KU8` | `TYF3262KU8` | identical, 5/5 variants |
+  | `skuId` | `CMOH4YS8J8` | `5CV84KXR5A` | different, 0/5 identical |
+
+  So `spinId` is the **global catalogue id** for a product variant, stable
+  everywhere, and `skuId` identifies **that variant's stock at the serving
+  store**. `spinId` says what you want; `skuId` says whose shelf it comes off.
+
+  Consequences:
+  - Persist `spinId` in your own data (shopping lists, reorder, favourites).
+    **Never persist `skuId`** — re-fetch it per address at cart-build time.
+  - Changing delivery address invalidates every `skuId` in the cart. This is
+    the real reason the docs say to `clear_cart` before switching address.
+  - A stale `skuId` is the likely cause of any "item unavailable" that
+    contradicts a search result.
+
+- **`addressId` vs `selectedAddressId` is a naming inconsistency, nothing
+  more.** The identical address-id string is accepted by both; only the
+  parameter name differs (`update_cart` uses `selectedAddressId`, everything
+  else uses `addressId`). There is no second kind of address id.
 - **`update_cart` replaces the entire cart.** There is no add/remove. Send the
   complete desired item list every time; snapshot before you overwrite.
 - **`get_addresses` returns no JSON.** Scrape IDs from prose:
@@ -350,3 +374,62 @@ Re-verify against the server before `checkout` regardless.
   advertised to this account at all.
 - Multi-store carts. `checkout` documents splitting into separate orders per
   store with partial-success results; never triggered.
+
+---
+
+## 9. Known change required on production access
+
+Everything here was built and verified in **local development mode**, where
+the docs say no approval is needed and `http://localhost` is an acceptable
+redirect target. The moment you apply at `/access` and get whitelisted for
+production, one specific piece stops working and must be rewritten.
+
+### What breaks
+
+`swiggy_auth.authorize_interactive()` — and only that function.
+
+It logs in by opening a browser and running a small HTTP server on
+`127.0.0.1:8765`, then waiting for Swiggy to redirect the code back to it.
+That works because the program and the browser are on the same machine.
+
+The docs state production redirect URIs must be **HTTPS and exact-match**,
+with `http://localhost` allowed for local development only (platform schemes
+such as `alexa://` are considered case by case). So a hosted deployment must
+nominate a real address it owns — `https://your.app/auth/callback` — and
+`127.0.0.1` stops being a legal target.
+
+### What that forces
+
+1. **The flow splits into two HTTP requests.** One to send the user to
+   Swiggy, another when Swiggy redirects back. The current blocking wait
+   (up to 300s in a loop) cannot exist in a request handler.
+2. **The PKCE verifier must be persisted**, keyed by `state`, because the two
+   requests do not share memory. Today it is a local variable held across the
+   wait.
+3. **Token storage must move to a database**, keyed by *your* application's
+   user id. The `~/.swiggy_mcp/sessions/<user_id>.json` layout assumes one
+   operating-system user per machine, and the file-permission isolation it
+   relies on gives you nothing on a server.
+4. **The `print()` calls must go.** The authorize URL has to be *returned* to
+   the caller so it can issue a redirect, not written to stdout.
+
+### What survives unchanged
+
+`discover()`, `register_client()`, `make_pkce()`, `exchange_code()`, the token
+record shape, and the 5-day / no-refresh handling. These are protocol, not
+interaction, and they have been verified against the live server.
+
+**So keep them separate.** If `authorize_interactive()` is isolated from the
+protocol functions before that day, the migration is one new adapter rather
+than a rewrite of code that already works.
+
+### Also read first
+
+For a product that brokers many end users rather than signing in as yourself,
+the docs describe a different path entirely: `/docs/start/enterprise/`
+`delegated-auth` — OAuth 2.1 on-behalf-of, with a per-user access token held
+by your platform. **Not read in detail during this work.** Start there rather
+than adapting the CLI flow.
+
+Applying for access requires: integration name, organisation, the exact
+redirect URIs, and which servers you need (`food`, `instamart`, `dineout`).
