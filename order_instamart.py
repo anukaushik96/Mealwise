@@ -22,10 +22,10 @@ import time
 import swiggy_auth
 from instamart import (CHECKOUT_LIMIT_PAISE, MAX_PAYABLE_PAISE, CartPlanner,
                        cart_item_total, cart_to_pay, fee_overhead,
-                       parse_address_list, snapshot_cart)
+                       fetch_all_addresses, flatten_variations, snapshot_cart)
 from money import parse_paise, rupees
-from parse_order import parse_order, parse_size_text, score_variant
-from swiggy_mcp import McpError, SwiggyMcp
+from parse_order import parse_order, rank_variants
+from swiggy_mcp import McpError, SwiggyMcp, guard, tool_data
 
 RULE = "-" * 74
 
@@ -77,40 +77,7 @@ def ask_int(prompt, lo, hi, default=None):
         print("  Out of range - enter %d to %d." % (lo, hi))
 
 
-def guard(payload, label):
-    """Raise on a tool-level failure instead of silently carrying on."""
-    if not isinstance(payload, dict):
-        return payload
-    if payload.get("_isError") or payload.get("success") is False:
-        message = ((payload.get("error") or {}).get("message")
-                   or payload.get("_text") or "unknown error")
-        raise McpError("%s failed: %s" % (label, str(message)[:300]))
-    return payload
-
-
 # ------------------------------------------------------------ step 1: address
-
-def fetch_all_addresses(client):
-    """get_addresses is prose-only and paginated at 10 per page."""
-    collected, page = [], 1
-    while page <= 10:
-        payload = guard(client.call_tool("get_addresses",
-                                        {"page": page, "pageSize": 10}), "get_addresses")
-        found = parse_address_list(payload)
-        if not found:
-            break
-        collected.extend(found)
-        if "Use page=%d" % (page + 1) not in (payload.get("_text") or ""):
-            break
-        page += 1
-    # De-duplicate while preserving order.
-    seen, unique = set(), []
-    for label, aid in collected:
-        if aid not in seen:
-            seen.add(aid)
-            unique.append((label, aid))
-    return unique
-
 
 def create_address(client):
     print("\nNew delivery address")
@@ -179,31 +146,6 @@ def choose_address(client):
 
 # ------------------------------------------------------------- step 2: items
 
-def flatten_variations(products, limit=6):
-    """One selectable row per in-stock variation, cheapest first per product."""
-    rows = []
-    for product in products[:limit]:
-        for var in product.get("variations", []) or []:
-            if not var.get("isInStockAndAvailable"):
-                continue
-            price = parse_paise((var.get("price") or {}).get("offerPrice"))
-            mrp = parse_paise((var.get("price") or {}).get("mrp"))
-            if price is None:
-                price = mrp
-            if price is None:
-                continue
-            rows.append({
-                "spinId": var.get("spinId"), "skuId": var.get("skuId"),
-                "name": var.get("displayName") or product.get("displayName") or "?",
-                "brand": var.get("brandName") or product.get("brand") or "",
-                "variant": var.get("quantityDescription") or "",
-                "price": price, "mrp": mrp,
-                "maxQuantity": var.get("maxQuantity"),
-                "promoted": bool(product.get("isPromoted")),
-            })
-    return rows
-
-
 def measure_fees(client, planner):
     """Push the cart once and read back the true fee overhead.
 
@@ -236,19 +178,6 @@ def measure_fees(client, planner):
     return fees
 
 
-def rank_variants(request, rows):
-    """Order variants by how well they match the requested size, then price."""
-    ranked = []
-    for row in rows:
-        size = parse_size_text(row["variant"])
-        score = score_variant(request, size)
-        if score is None:
-            continue  # wrong dimension entirely: grams asked, millilitres offered
-        ranked.append((score, row["price"], row, size))
-    ranked.sort(key=lambda r: (round(r[0], 3), r[1]))
-    return ranked
-
-
 def resolve_request(client, planner, address_id, request, allow_probe=True):
     """Search for one parsed request and let the user confirm the variant."""
     print("\n%s\n> %s" % (RULE, request))
@@ -260,9 +189,9 @@ def resolve_request(client, planner, address_id, request, allow_probe=True):
         print("  Search failed: %s" % exc)
         return
 
-    rows = flatten_variations(found.get("products") or [])
+    rows = flatten_variations(tool_data(found, "products") or [])
     if not rows:
-        rows = flatten_variations(found.get("similarProducts") or [])
+        rows = flatten_variations(tool_data(found, "similarProducts") or [])
         if rows:
             print("  No exact product match - showing similar items.")
     if not rows:
@@ -621,9 +550,12 @@ def main():
     fees = fee_overhead(cart)
     measured = fees is not None and existing
     if not measured:
-        fees = 5000
-        print("\nNo existing cart to measure fees from; assuming %s until the first"
-              " real cart read." % rupees(fees))
+        # No guess goes here. A fee cannot be estimated - see section 1.1 of
+        # INSTAMART_NOTES.md - so the running total is items only, and says so,
+        # until the first cart write lets the server price it.
+        fees = 0
+        print("\nNo cart to price yet, so fees are unknown: the running total is"
+              " items only until your first item is added.")
     else:
         print("\nMeasured fee overhead from your current cart: %s" % rupees(fees))
         print("You already have %d item(s) worth %s in the cart."
@@ -641,9 +573,16 @@ def main():
     if args.dry_run:
         final = planner.status()
         print("\n%s\nDRY RUN - cart NOT written, nothing ordered." % RULE)
-        print("Planned %d line(s): items %s + fees %s = %s"
-              % (len(planner.lines), rupees(final.item_total),
-                 rupees(final.fees), rupees(final.projected)))
+        if final.measured:
+            print("Planned %d line(s): items %s + fees %s = %s"
+                  % (len(planner.lines), rupees(final.item_total),
+                     rupees(final.fees), rupees(final.projected)))
+        else:
+            # Do not print "+ fees Rs 0" - zero is not what the fees are, it
+            # is what we know about them.
+            print("Planned %d line(s): items %s. Fees unpriced - a dry run "
+                  "writes no cart for Swiggy to price."
+                  % (len(planner.lines), rupees(final.item_total)))
         print(final.message())
         return 0
 

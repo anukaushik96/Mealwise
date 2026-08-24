@@ -52,7 +52,12 @@ _TRAIL_X = re.compile(r"[x*]\s*(\d+)\s*(?:units?|nos?|pcs?|pieces?|packs?|packet
 # is deliberately excluded so "12 eggs"/"6 pieces" stay pack SIZES, not counts.
 _TRAIL_UNITS = re.compile(r"(\d+)\s*(?:units?|nos?)\s*$", re.I)
 
-_QTY = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)\s*([a-z]+)?", re.I)
+_QTY = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)(\s*)([a-z]+)?", re.I)
+
+# A count written as a bare number before the product name ("2 maggi"). Capped
+# low on purpose: the higher the number, the likelier it is part of a brand
+# name ("sunfeast 50 50") than a quantity someone typed.
+_MAX_BARE_COUNT = 20
 
 
 class Size(object):
@@ -161,7 +166,8 @@ def _parse_segment(segment):
 
     for match in _QTY.finditer(segment):
         value = float(match.group(1))
-        word = (match.group(2) or "").lower()
+        gap = match.group(2) or ""
+        word = (match.group(3) or "").lower()
 
         if word in UNITS:
             multiplier, dimension = UNITS[word]
@@ -175,10 +181,22 @@ def _parse_segment(segment):
             count = int(value)
             consumed.append(match.span())
         elif not word:
-            # A bare number: "2 maggi" or a trailing "x 3".
+            # A trailing bare number: "maggi 2".
             if value.is_integer() and 1 <= value <= 50:
                 count = int(value)
                 consumed.append(match.span())
+        elif gap and value.is_integer() and 1 <= value <= _MAX_BARE_COUNT:
+            # A number, a space, then a word that is not a measurement:
+            # "2 maggi", "3 packets" having been handled above. Without the
+            # space this would eat the "7" of "7up", so the space is the whole
+            # test. Only the digits are consumed - the word is the product.
+            #
+            # Until this existed, "2 maggi" searched Swiggy for "2 maggi" and
+            # ordered one of it: the digit leaked into the query and the
+            # quantity vanished silently, which is the exact failure section
+            # 1.10 of INSTAMART_NOTES.md was written about.
+            count = int(value)
+            consumed.append(match.span(1))
 
     # Strip the quantity spans out; whatever is left is the product name.
     text = segment
@@ -220,6 +238,24 @@ def parse_order(sentence):
         if parsed:
             requests.append(parsed)
     return requests
+
+
+def rank_variants(request, rows):
+    """Order candidate rows by how well they match the requested size, then price.
+
+    Rows whose dimension is wrong entirely (grams asked, millilitres offered)
+    are dropped, not ranked last - they are not the same product shape.
+    Returns [(score, price, row, size)]; score 0.0 means an exact size match.
+    """
+    ranked = []
+    for row in rows:
+        size = parse_size_text(row["variant"])
+        score = score_variant(request, size)
+        if score is None:
+            continue
+        ranked.append((score, row["price"], row, size))
+    ranked.sort(key=lambda r: (round(r[0], 3), r[1]))
+    return ranked
 
 
 def score_variant(request, variant_size):
