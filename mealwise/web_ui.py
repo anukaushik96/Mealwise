@@ -823,10 +823,12 @@ def placed_page(ctx, view):
         "<tr><td>Paid</td><td>%s</td></tr>"
         "<tr><td>Deliver to</td><td>%s</td></tr></table>"
         "<a class=\"btn\" href=\"/\" style=\"margin-top:1rem\">Start another order</a>"
-        "</div>"
+        "</div>%s"
         % (notes(ctx), esc(view["headline"]), esc(view.get("detail") or ""),
            esc(view.get("order_id") or "?"), esc(view.get("status") or "?"),
-           rupees(view.get("total")), esc(ctx.get("address_label")))
+           rupees(view.get("total")), esc(ctx.get("address_label")),
+           ("<p class=\"small muted\">Track it with <span class=\"mono\">%s</span></p>"
+            % esc(view["track"]) if view.get("track") else ""))
     )
     return page("Order placed - %s" % BRAND, body, ctx=ctx)
 
