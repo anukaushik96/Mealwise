@@ -159,6 +159,18 @@ the session. The cart is shared live state and your writes can be raced.
 Always re-read `get_cart` after writing, and verify the contents are what you
 expect before checking out.
 
+**Seen again 2026-08-25, and it survived the replace.** A "NOICE Bombay Laadi
+Pav ₹69" was in `get_cart` *after* an `update_cart` that did not include it —
+so "replaces the entire cart" did not evict it. It was billed: the cart read 6
+items and ₹354 to pay while the client had sent 5. `clear_cart` followed by
+`update_cart` is the only other lever available.
+
+**The consequence for any UI: render the cart you were given, not the cart you
+sent.** They are different lists, and the bill is computed from the server's.
+A screen built from the client's own basket shows five rows, charges for six,
+and offers no way to remove the sixth — the user sees a total that disagrees
+with the items above it and has no idea why.
+
 ### 1.8 Never hardcode the free-delivery threshold
 > **Belief that broke:** *The free-delivery threshold is ₹259*
 **Refined by measurement, and then: never hardcode it.** Delivery was FREE at

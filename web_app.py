@@ -278,28 +278,43 @@ class App(object):
             self.planner.fees = fees
             self.planner.fees_measured = True
 
-        warnings.extend(self.unexpected_items(cart))
         return cart, warnings
 
-    def unexpected_items(self, cart):
-        """Flag items in the cart that this session did not put there.
+    def cart_rows(self, cart):
+        """One row per item SWIGGY says is in the cart - not per item we sent.
 
-        Observed live: an item nobody here added appeared mid-session because
-        the same account was being used in the Swiggy app. It would otherwise
-        be paid for silently.
+        These are two different lists, and the difference is the whole point.
+        The bill is computed from the server's cart, so anything in it is
+        being paid for; rendering our own basket instead meant an item added
+        from the phone app was charged for, warned about, and yet had no row
+        and no way to remove it. Observed live: a Laadi Pav worth Rs 69 in a
+        Rs 354 bill, with five rows on screen and six in the cart.
+
+        Rows carry the planner index when the item is ours, so the quantity
+        and remove controls keep working; a row with index None is a stranger
+        and can only be dealt with by rebuilding the cart.
         """
-        ours = set()
-        for line in self.planner.lines:
-            ours.add(line["spinId"])
-        strangers = []
+        rows = []
         for item in (cart.get("items") or []):
-            if item.get("spinId") and item["spinId"] not in ours:
-                strangers.append(item.get("itemName") or item["spinId"])
-        if not strangers:
-            return []
-        return ["%s is in your Swiggy cart but was not added here - it will be "
-                "paid for too. Check the Swiggy app if that is a surprise."
-                % name for name in strangers[:4]]
+            spin, sku = item.get("spinId"), item.get("skuId")
+            line = self.planner.find(spin, sku) if (spin and sku) else None
+            price = parse_paise(item.get("discountedFinalPrice"))
+            if price is None:
+                price = parse_paise(item.get("mrp")) or 0
+            rows.append({
+                "name": ("%s %s" % (item.get("itemName") or "?",
+                                    item.get("itemVariant") or "")).strip(),
+                "price": price,
+                "quantity": int(item.get("quantity", 1) or 1),
+                "image": item.get("imageUrl"),
+                "max_quantity": item.get("maxQuantity") or 99,
+                "ours": line is not None,
+                "index": self.planner.lines.index(line) if line is not None else None,
+                # An item the server is holding but not billing. Never silent:
+                # it is why a total can disagree with the rows above it.
+                "in_stock": item.get("isInStockAndAvailable") is not False,
+            })
+        return rows
 
     def measure_fees(self):
         """One round trip so the running total stops being a guess."""
@@ -320,6 +335,12 @@ class App(object):
                         ("Fees, taxes and delivery",
                          "not priced - a dry run writes no cart"))
             return {
+                "rows": [{"name": l["name"], "price": l["price"],
+                          "quantity": l["quantity"], "image": l.get("image"),
+                          "max_quantity": l.get("maxQuantity") or 99,
+                          "ours": True, "index": i, "in_stock": True}
+                         for i, l in enumerate(self.planner.lines)],
+                "foreign": [],
                 "bill_lines": [("Item total", rupees(status.item_total)), fee_line],
                 "to_pay": status.projected,
                 "projected": status.projected,
@@ -344,7 +365,10 @@ class App(object):
                 for line in ((cart.get("billBreakdown") or {}).get("lineItems") or [])]
         if not bill:
             bill = [("Item total", rupees(cart_item_total(cart)))]
+        rows = self.cart_rows(cart)
         return {
+            "rows": rows,
+            "foreign": [r for r in rows if not r["ours"]],
             "bill_lines": bill,
             "to_pay": to_pay,
             "projected": projected,
@@ -599,6 +623,7 @@ class Handler(BaseHTTPRequestHandler):
             ("GET", "/cart"): self.view_cart,
             ("POST", "/cart/qty"): self.act_qty,
             ("POST", "/cart/remove"): self.act_remove,
+            ("POST", "/cart/rebuild"): self.act_rebuild,
             ("POST", "/payment"): self.act_payment,
             ("GET", "/confirm"): self.view_confirm,
             ("POST", "/checkout"): self.act_checkout,
@@ -961,6 +986,28 @@ class Handler(BaseHTTPRequestHandler):
         lines = app.planner.lines if app.planner else []
         if 0 <= index < len(lines):
             lines.pop(index)
+        raise Redirect("/cart")
+
+    def act_rebuild(self, form, query):
+        """Empty the cart on Swiggy's side, then write back only our basket.
+
+        This exists because update_cart did not evict a stranger: the docs say
+        it replaces the whole cart, and live it kept an item added from the
+        phone app anyway (field notes 1.7). clear_cart is the only other lever
+        there is. If the item returns, something else is writing to the
+        account right now - which is worth knowing rather than fighting.
+        """
+        app = self.app
+        if app.dry_run:
+            raise Redirect("/cart")
+        try:
+            guard(app.mcp().call_tool("clear_cart", {}), "clear_cart")
+        except McpError as exc:
+            app.say("bad", "Could not empty the cart: %s" % exc)
+            raise Redirect("/cart")
+        if app.planner.lines:
+            app.push_cart()
+        app.say("ok", "Cart rebuilt from your basket alone.")
         raise Redirect("/cart")
 
     def act_payment(self, form, query):

@@ -224,6 +224,11 @@ form.inline{display:inline;margin:0}
 .pick .tag{font-size:11px;border-radius:99px;padding:.1rem .45rem;margin-left:.4rem;
   background:var(--ok-bg);color:var(--ok);font-weight:600;white-space:nowrap}
 .pick .tag.grey{background:var(--bg);color:var(--muted)}
+.line-name .tag{font-size:11px;border-radius:99px;padding:.1rem .45rem;
+  margin-left:.4rem;font-weight:600;white-space:nowrap;vertical-align:1px}
+.line-name .tag.grey{background:var(--bg);color:var(--muted)}
+.line-name .tag.warnish{background:var(--warn-bg);color:var(--warn)}
+.qty.static{border-style:dashed;color:var(--muted)}
 .pick .amt{margin-left:auto;text-align:right;font-variant-numeric:tabular-nums;
   font-weight:600;white-space:nowrap}
 .unit{display:block;font-size:12px;color:var(--muted)}
@@ -617,28 +622,10 @@ def choose_page(ctx, item):
 
 def cart_page(ctx, view):
     """The real, server-priced cart plus the Rs 1000 gate."""
-    lines = "".join(
-        "<div class=\"line\">%s"
-        "<div class=\"line-main\"><div class=\"line-name\">%s</div>"
-        "<div class=\"line-meta\">%s each</div></div>"
-        "<form method=\"post\" action=\"/cart/qty\" class=\"inline\">%s"
-        "<input type=\"hidden\" name=\"index\" value=\"%d\">"
-        "<span class=\"qty\">"
-        "<button type=\"submit\" name=\"delta\" value=\"-1\" title=\"one fewer\">&minus;</button>"
-        "<span>%d</span>"
-        "<button type=\"submit\" name=\"delta\" value=\"1\" title=\"one more\">+</button>"
-        "</span></form>"
-        "<div class=\"line-amt\">%s<br>"
-        "<form method=\"post\" action=\"/cart/remove\" class=\"inline\">%s"
-        "<input type=\"hidden\" name=\"index\" value=\"%d\">"
-        "<button class=\"btn ghost sm\" type=\"submit\">Remove</button></form></div></div>"
-        % (thumb(line.get("image"), line["name"]),
-           esc(line["name"]), rupees(line["price"]), nonce_field(ctx), index,
-           line["quantity"], rupees(line["price"] * line["quantity"]),
-           nonce_field(ctx), index)
-        for index, line in enumerate(ctx.get("lines") or []))
+    rows = (view or {}).get("rows") or []
+    lines = "".join(cart_row(ctx, row) for row in rows)
 
-    if not lines:
+    if not rows:
         body = ("%s%s<h1>Your cart is empty</h1>"
                 "<p class=\"sub\">Nothing has been ordered.</p>"
                 "<a class=\"btn\" href=\"/\">Start a list</a>"
@@ -665,6 +652,17 @@ def cart_page(ctx, view):
     if view["warnings"]:
         gate += note("warn", "<b>Swiggy changed part of this cart:</b><ul>%s</ul>"
                      % "".join("<li>%s</li>" % esc(w) for w in view["warnings"]))
+
+    if view.get("foreign"):
+        gate += note("warn",
+                     "<b>%d item%s in your Swiggy cart came from somewhere else"
+                     "</b> - the phone app, most likely. %s marked "
+                     "&ldquo;added elsewhere&rdquo; below, and included in the "
+                     "total. Removing one empties the cart on Swiggy&rsquo;s "
+                     "side and writes back only your basket."
+                     % (len(view["foreign"]),
+                        "" if len(view["foreign"]) == 1 else "s",
+                        "It is" if len(view["foreign"]) == 1 else "They are"))
 
     if view["drift"]:
         gate += note("info", "The running estimate said %s; the server says %s. "
@@ -699,6 +697,49 @@ def cart_page(ctx, view):
            gate, lines, bill, pay_row, payment_modal(ctx, view["payment_options"]))
     )
     return page("Cart - %s" % BRAND, body, ctx=ctx)
+
+
+def cart_row(ctx, row):
+    """One cart line. Ours gets controls; a stranger gets an explanation.
+
+    An item this session did not add still appears here, because Swiggy is
+    billing for it either way. Hiding it is how a total ends up disagreeing
+    with the rows above it.
+    """
+    tags = ""
+    if not row["in_stock"]:
+        tags += ("<span class=\"tag grey\">out of stock - not billed</span>")
+    if not row["ours"]:
+        tags += "<span class=\"tag warnish\">added elsewhere</span>"
+
+    if row["ours"]:
+        controls = (
+            "<form method=\"post\" action=\"/cart/qty\" class=\"inline\">%s"
+            "<input type=\"hidden\" name=\"index\" value=\"%d\">"
+            "<span class=\"qty\">"
+            "<button type=\"submit\" name=\"delta\" value=\"-1\" "
+            "title=\"one fewer\">&minus;</button><span>%d</span>"
+            "<button type=\"submit\" name=\"delta\" value=\"1\" "
+            "title=\"one more\">+</button></span></form>"
+            % (nonce_field(ctx), row["index"], row["quantity"]))
+        action = ("<form method=\"post\" action=\"/cart/remove\" class=\"inline\">%s"
+                  "<input type=\"hidden\" name=\"index\" value=\"%d\">"
+                  "<button class=\"btn ghost sm\" type=\"submit\">Remove</button>"
+                  "</form>" % (nonce_field(ctx), row["index"]))
+    else:
+        controls = "<span class=\"qty static\"><span>%d</span></span>" % row["quantity"]
+        action = ("<form method=\"post\" action=\"/cart/rebuild\" class=\"inline\">%s"
+                  "<button class=\"btn ghost sm\" type=\"submit\" "
+                  "title=\"Empty the Swiggy cart and write back only your basket\">"
+                  "Remove</button></form>" % nonce_field(ctx))
+
+    return ("<div class=\"line\">%s"
+            "<div class=\"line-main\"><div class=\"line-name\">%s%s</div>"
+            "<div class=\"line-meta\">%s each</div></div>%s"
+            "<div class=\"line-amt\">%s<br>%s</div></div>"
+            % (thumb(row.get("image"), row["name"]), esc(row["name"]), tags,
+               rupees(row["price"]), controls,
+               rupees(row["price"] * row["quantity"]), action))
 
 
 def payment_modal(ctx, options):
