@@ -469,13 +469,24 @@ class App(object):
 
     def add_line(self, row, quantity):
         first = not self.planner.lines
+        existing = self.planner.find(row["spinId"], row["skuId"])
+        before = existing["quantity"] if existing else 0
         self.planner.add(row["spinId"], row["skuId"],
                          ("%s %s" % (row["name"], row["variant"])).strip(),
                          row["price"], quantity, row["maxQuantity"], strict=False)
-        # Keep the per-variant cap so the cart's +/- buttons cannot exceed it,
-        # and the photo so the cart can show what was chosen.
-        self.planner.lines[-1]["maxQuantity"] = row["maxQuantity"] or 99
-        self.planner.lines[-1]["image"] = row.get("image")
+        line = self.planner.find(row["spinId"], row["skuId"])
+        if line is not None:
+            # Keep the per-variant cap so the cart's +/- buttons cannot exceed
+            # it, and the photo so the cart can show what was chosen.
+            line["maxQuantity"] = row["maxQuantity"] or 99
+            line["image"] = row.get("image")
+            if existing is not None and line["quantity"] == before:
+                self.say("warn", "%s is already at Swiggy's limit of %d per "
+                                 "order, so nothing was added."
+                         % (row["name"], row["maxQuantity"] or 99))
+            elif existing is not None:
+                self.say("info", "%s was already in your basket - it is now x%d."
+                         % (row["name"], line["quantity"]))
         if first:
             # Fees cannot be known before a cart exists, so price one the
             # instant there is something to price. One round trip here is what
@@ -812,10 +823,32 @@ class Handler(BaseHTTPRequestHandler):
         return web_ui.review_page(app.ctx(), app.parsed)
 
     def act_review(self, form, query):
-        """Search every confirmed line; queue whatever needs a human choice."""
+        """Search every confirmed line; queue whatever needs a human choice.
+
+        First, though: anything typed into "anything missing" is parsed and
+        added to the list, and the screen comes back so the additions are
+        echoed too. A suggested list is often nearly right, and re-typing the
+        whole thing to add one item would be silly.
+        """
         app = self.app
         if not app.parsed:
             raise Redirect("/")
+
+        extra = (form.get("add") or "").strip()
+        if extra:
+            more = parse_order(extra)
+            if more:
+                app.parsed = list(app.parsed) + more
+                # Say it out loud. Either button lands here when the box has
+                # text, so someone who typed and pressed "Yes, find these"
+                # needs to know why they are back on the same screen.
+                app.say("ok", "Added to the list - check it, then confirm.")
+            else:
+                app.say("warn", "Could not pick any items out of %r - try "
+                                "\"name + size\", like \"200 g ice cream\"."
+                        % extra[:60])
+            raise Redirect("/review")
+
         requests, app.parsed = app.parsed, []
         app.suggested_from = None
         app.ensure_planner()

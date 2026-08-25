@@ -461,7 +461,7 @@ def home_page(ctx):
                 "spelled-out numbers.")
 
     body = (
-        "%s%s<h1>What do you need?</h1>"
+        "%s%s<h1>%s</h1>"
         "<p class=\"sub\">%s</p>"
         "<div class=\"card\"><form method=\"post\" action=\"/order\">%s"
         "<textarea name=\"text\" autofocus placeholder=\"%s\">%s</textarea>"
@@ -469,7 +469,9 @@ def home_page(ctx):
         "added.</p>"
         "<button class=\"btn block\" type=\"submit\" style=\"margin-top:.6rem\">"
         "Find these items</button></form></div>%s"
-        % (notes(ctx), steps("List"), subtitle, nonce_field(ctx),
+        % (notes(ctx), steps("List"),
+           "What else do you need?" if ctx.get("lines") else "What do you need?",
+           subtitle, nonce_field(ctx),
            placeholder, esc(ctx.get("draft") or ""), hint, cart)
     )
     return page(BRAND, body, ctx=ctx)
@@ -544,10 +546,18 @@ def review_page(ctx, requests):
         "%s%s<h1>%s</h1>"
         "<p class=\"sub\">%s</p>"
         "<div class=\"card\">%s<hr>"
-        "<div class=\"row end\"><a class=\"btn ghost\" href=\"/\">%s</a>"
-        "<form method=\"post\" action=\"/review\" class=\"inline\">%s"
-        "<button class=\"btn\" type=\"submit\">Yes, find these</button></form></div></div>"
-        % (notes(ctx), steps("List"), heading, blurb, rows, back, nonce_field(ctx))
+        "<form method=\"post\" action=\"/review\">%s"
+        "<label>Anything missing? <span class=\"opt\">added to the list above"
+        "</span></label>"
+        "<textarea name=\"add\" rows=\"2\" placeholder=\"200 g vanilla ice cream, "
+        "1 packet straws\"></textarea>"
+        "<div class=\"row end\" style=\"margin-top:.7rem\">"
+        "<a class=\"btn ghost\" href=\"/\">%s</a>"
+        "<button class=\"btn ghost\" type=\"submit\" name=\"more\" value=\"1\">"
+        "Add to list</button>"
+        "<button class=\"btn\" type=\"submit\">Yes, find these</button>"
+        "</div></form></div>"
+        % (notes(ctx), steps("List"), heading, blurb, rows, nonce_field(ctx), back)
     )
     return page("Check your list - %s" % BRAND, body, ctx=ctx)
 
@@ -682,7 +692,8 @@ def cart_page(ctx, view):
     body = (
         "%s%s<h1>Your cart</h1>"
         "<p class=\"sub\">Priced by Swiggy just now, at %s.</p>%s"
-        "<div class=\"card\">%s</div>"
+        "<div class=\"card\">%s<hr>"
+        "<a class=\"btn ghost block\" href=\"/\">+ Add more items</a></div>"
         "<div class=\"card\"><h2>Bill</h2>%s%s</div>%s"
         % (notes(ctx), steps("Cart"), esc(ctx.get("address_label") or "your address"),
            gate, lines, bill, pay_row, payment_modal(ctx, view["payment_options"]))
