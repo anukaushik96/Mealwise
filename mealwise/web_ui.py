@@ -468,7 +468,7 @@ def home_page(ctx):
         "%s%s<h1>%s</h1>"
         "<p class=\"sub\">%s</p>"
         "<div class=\"card\"><form method=\"post\" action=\"/order\">%s"
-        "<textarea name=\"text\" autofocus placeholder=\"%s\">%s</textarea>"
+        "<textarea name=\"text\" autofocus autocomplete=\"off\" placeholder=\"%s\">%s</textarea>"
         "<p class=\"small muted\">%s You confirm every item before anything is "
         "added.</p>"
         "<button class=\"btn block\" type=\"submit\" style=\"margin-top:.6rem\">"
