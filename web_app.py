@@ -1348,14 +1348,21 @@ def main():
                   % os.path.basename(__file__))
             return 1
 
+    # Line-buffered by default only when stdout is a terminal; redirect this
+    # to a file and the startup banner would sit in a buffer for the lifetime
+    # of the server, making a log look like a silent failure.
+    def say(line):
+        print(line)
+        sys.stdout.flush()
+
     url = "http://127.0.0.1:%d/" % args.port
-    print("%s is running at %s" % (web_ui.BRAND, url))
+    say("%s is running at %s" % (web_ui.BRAND, url))
     if args.dry_run:
-        print("DRY RUN - the cart is never written and no order can be placed.")
-    print("Sessions are stored under %s, never in this folder." % swiggy_auth.TOKEN_DIR)
-    print("Press Ctrl-C to stop.")
+        say("DRY RUN - the cart is never written and no order can be placed.")
+    say("Sessions are stored under %s, never in this folder." % swiggy_auth.TOKEN_DIR)
+    say("Press Ctrl-C to stop.")
     if not args.no_browser and not open_browser(url):
-        print("Could not open a browser for you - open %s yourself." % url)
+        say("Could not open a browser for you - open %s yourself." % url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
