@@ -1,5 +1,11 @@
+# Sessions and tokens: never in the repo, always under ~/.swiggy_mcp
 .swiggy_token.json
 .swiggy_mcp/
 probe_out/
+
+# Python
 __pycache__/
 *.pyc
+*.egg-info/
+build/
+dist/

@@ -194,7 +194,7 @@ def _parse_segment(segment):
             # Until this existed, "2 maggi" searched Swiggy for "2 maggi" and
             # ordered one of it: the digit leaked into the query and the
             # quantity vanished silently, which is the exact failure section
-            # 1.10 of INSTAMART_NOTES.md was written about.
+            # 1.10 of docs/instamart-notes.md was written about.
             count = int(value)
             consumed.append(match.span(1))
 

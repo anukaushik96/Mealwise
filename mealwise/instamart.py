@@ -17,8 +17,8 @@ projection guides shopping, and the server's own toPay decides checkout.
 
 import re
 
-from money import parse_paise, rupees
-from swiggy_mcp import guard, tool_data
+from .money import parse_paise, rupees
+from .swiggy_mcp import guard, tool_data
 
 # checkout is refused at or above ₹1000, so the largest payable cart is ₹999.
 CHECKOUT_LIMIT_PAISE = 100000

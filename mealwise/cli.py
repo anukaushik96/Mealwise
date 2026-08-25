@@ -10,22 +10,22 @@ Safety rules baked in:
   * --dry-run stops before touching your cart at all.
 
 Usage:
-  python3 order_instamart.py
-  python3 order_instamart.py --dry-run     # plan only, never writes the cart
-  python3 order_instamart.py --budget 500  # your own ceiling, below the Rs 999 max
+  python3 -m mealwise.cli
+  python3 -m mealwise.cli --dry-run     # plan only, never writes the cart
+  python3 -m mealwise.cli --budget 500  # your own ceiling, below the Rs 999 max
 """
 
 import argparse
 import sys
 import time
 
-import swiggy_auth
-from instamart import (CHECKOUT_LIMIT_PAISE, MAX_PAYABLE_PAISE, CartPlanner,
+from . import swiggy_auth
+from .instamart import (CHECKOUT_LIMIT_PAISE, MAX_PAYABLE_PAISE, CartPlanner,
                        cart_item_total, cart_to_pay, fee_overhead,
                        fetch_all_addresses, flatten_variations, snapshot_cart)
-from money import parse_paise, rupees
-from parse_order import parse_order, rank_variants
-from swiggy_mcp import McpError, SwiggyMcp, guard, tool_data
+from .money import parse_paise, rupees
+from .parse_order import parse_order, rank_variants
+from .swiggy_mcp import McpError, SwiggyMcp, guard, tool_data
 
 RULE = "-" * 74
 
@@ -491,7 +491,9 @@ def checkout(client, address_id, label, cart, to_pay, payment):
 # ---------------------------------------------------------------------- main
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        prog="python3 -m mealwise.cli",
+        description="Order groceries from Swiggy Instamart, in the terminal")
     ap.add_argument("--dry-run", action="store_true",
                     help="plan only; never writes the cart or orders")
     ap.add_argument("--budget", type=float, default=None,
@@ -551,7 +553,7 @@ def main():
     measured = fees is not None and existing
     if not measured:
         # No guess goes here. A fee cannot be estimated - see section 1.1 of
-        # INSTAMART_NOTES.md - so the running total is items only, and says so,
+        # docs/instamart-notes.md - so the running total is items only, and says so,
         # until the first cart write lets the server price it.
         fees = 0
         print("\nNo cart to price yet, so fees are unknown: the running total is"

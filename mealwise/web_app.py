@@ -1,8 +1,8 @@
 """Local web UI for Instamart ordering over Swiggy MCP.
 
-    python3 web_app.py                 # opens http://127.0.0.1:8765
-    python3 web_app.py --dry-run       # walks everything, never writes or orders
-    python3 web_app.py --budget 500    # your own ceiling, under the Rs 999 max
+    python3 -m mealwise                 # opens http://127.0.0.1:8765
+    python3 -m mealwise --dry-run       # walks everything, never writes or orders
+    python3 -m mealwise --port 9000     # if 8765 is taken
 
 Same engine as the CLI - CartPlanner, the Rs 1000 gate, the order parser - with
 a browser in front of it. Only the front end is new.
@@ -20,8 +20,8 @@ Three deliberate constraints:
     token one of them could spend your money.
 
 State lives in memory for one signed-in person, which is what a local tool is.
-Nothing here is a multi-tenant server - see section 9 of INSTAMART_NOTES.md for
-what hosting this would actually require.
+Nothing here is a multi-tenant server - see section 9 of
+docs/instamart-notes.md for what hosting this would actually require.
 """
 
 import argparse
@@ -37,15 +37,15 @@ import webbrowser
 from html import escape
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import recipe
-import swiggy_auth
-import web_ui
-from instamart import (CHECKOUT_LIMIT_PAISE, BudgetStatus, CartPlanner,
+from . import recipe
+from . import swiggy_auth
+from . import web_ui
+from .instamart import (CHECKOUT_LIMIT_PAISE, BudgetStatus, CartPlanner,
                        cart_item_total, cart_to_pay, cart_write_warnings,
                        fee_overhead, fetch_all_addresses, search_rows)
-from money import parse_paise, rupees
-from parse_order import parse_order, rank_variants
-from swiggy_mcp import McpError, SwiggyMcp, guard, tool_data
+from .money import parse_paise, rupees
+from .parse_order import parse_order, rank_variants
+from .swiggy_mcp import McpError, SwiggyMcp, guard, tool_data
 
 # There is no starting fee figure, because a fee cannot be estimated. Measured
 # fee load has ranged from 4% to 123% of the item total, the SET of fee lines
@@ -58,6 +58,7 @@ from swiggy_mcp import McpError, SwiggyMcp, guard, tool_data
 MAX_VARIANTS_SHOWN = 8
 UPI_POLL_SECONDS = 300      # the documented cap on a pending UPI payment
 EXACT = 1e-6                # a rank score this small is an exact size match
+PACKAGE = __package__ or "mealwise"   # how this program appears in a ps line
 
 
 class Redirect(Exception):
@@ -1289,7 +1290,11 @@ def stale_instance(port):
                 stderr=subprocess.DEVNULL).decode("utf-8", "replace")
         except (OSError, subprocess.CalledProcessError):
             continue
-        if os.path.basename(__file__).split(".")[0] in command:
+        # Match the package name: it is in the command line however this
+        # was started - "python3 -m mealwise", the installed console
+        # script, or a direct path into mealwise/. A filename match
+        # would miss "-m mealwise" entirely.
+        if PACKAGE in command:
             return pid
     return None
 
@@ -1356,7 +1361,9 @@ def open_browser(url):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Web UI for Instamart ordering")
+    ap = argparse.ArgumentParser(
+        prog="python3 -m mealwise",
+        description="Order groceries from Swiggy Instamart, in a browser")
     ap.add_argument("--port", type=int, default=swiggy_auth.REDIRECT_PORT,
                     help="port to serve on (default %d)" % swiggy_auth.REDIRECT_PORT)
     ap.add_argument("--dry-run", action="store_true",
@@ -1387,8 +1394,7 @@ def main():
             print("That something is not this app. The CLI's login server uses "
                   "%d too." % swiggy_auth.REDIRECT_PORT)
             print("Find it with:  lsof -nP -iTCP:%d -sTCP:LISTEN" % args.port)
-            print("Or pick another port:  python3 %s --port 9000"
-                  % os.path.basename(__file__))
+            print("Or pick another port:  python3 -m %s --port 9000" % PACKAGE)
             return 1
 
     # Line-buffered by default only when stdout is a terminal; redirect this

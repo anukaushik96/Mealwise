@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mealwise"
+version = "0.1.0"
+description = "Order groceries from Swiggy Instamart, with a hard cap on what you can be charged"
+readme = "README.md"
+requires-python = ">=3.9"
+# Deliberately empty: the standard library only, so the app runs on a stock
+# python3 with nothing to install. Keep it that way - see README.
+dependencies = []
+
+[project.scripts]
+mealwise = "mealwise.web_app:main"
+mealwise-cli = "mealwise.cli:main"
+mealwise-probe = "mealwise.probe:main"
+
+[tool.setuptools]
+packages = ["mealwise"]
