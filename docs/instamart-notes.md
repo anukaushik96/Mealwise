@@ -41,17 +41,17 @@ this file is out of date. Fix it in place.
 
 | File | What it owns |
 |---|---|
-| `swiggy_auth.py` | OAuth 2.1 + PKCE, dynamic client registration, token cache |
-| `swiggy_mcp.py` | JSON-RPC transport; splits prose from the appended JSON |
-| `money.py` | Rupee parsing to integer paise; handles `"FREE"`, `"₹1,234.50"` |
-| `instamart.py` | Cart planner, the ₹1000 limit maths, cart/fee helpers |
-| `parse_order.py` | Natural-language order sentence → items, sizes, counts |
-| `order_instamart.py` | The interactive ordering CLI |
-| `web_app.py` | The web UI: routes, session state, the split OAuth flow |
-| `web_ui.py` | HTML for the web UI - no JavaScript, anywhere |
-| `probe_instamart.py` | Read-only prober; dumps every tool's raw response |
+| `mealwise/swiggy_auth.py` | OAuth 2.1 + PKCE, dynamic client registration, token cache |
+| `mealwise/swiggy_mcp.py` | JSON-RPC transport; splits prose from the appended JSON |
+| `mealwise/money.py` | Rupee parsing to integer paise; handles `"FREE"`, `"₹1,234.50"` |
+| `mealwise/instamart.py` | Cart planner, the ₹1000 limit maths, cart/fee helpers |
+| `mealwise/parse_order.py` | Natural-language order sentence → items, sizes, counts |
+| `mealwise/cli.py` | The interactive ordering CLI |
+| `mealwise/web_app.py` | The web UI: routes, session state, the split OAuth flow |
+| `mealwise/web_ui.py` | HTML for the web UI - no JavaScript, anywhere |
+| `mealwise/probe.py` | Read-only prober; dumps every tool's raw response |
 
-The §2 trust hierarchy is enforced in `instamart.py` — `cart_item_total()`
+The §2 trust hierarchy is enforced in `mealwise/instamart.py` — `cart_item_total()`
 reads the server's `Item Total` line, and `fee_overhead()` derives fees by
 subtraction from `toPay`. If you rewrite those, re-read §1.4 and §1.6 first.
 

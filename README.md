@@ -8,8 +8,8 @@ It comes as **a web UI** and **a command line**, over one shared engine — the
 same cart planner, the same ₹1000 gate, the same order parser.
 
 ```bash
-python3 web_app.py            # a browser UI on http://127.0.0.1:8765
-python3 order_instamart.py    # the same flow in the terminal
+python3 -m mealwise        # a browser UI on http://127.0.0.1:8765
+python3 -m mealwise.cli    # the same flow in the terminal
 ```
 
 ```
@@ -24,7 +24,7 @@ Verified on macOS with the system Python 3.9.6.
 ## Getting started
 
 ```bash
-python3 web_app.py
+python3 -m mealwise
 ```
 
 Your browser opens on the app. Sign in with **your own phone number and OTP**
@@ -33,25 +33,25 @@ itself. The session lasts 5 days, so you are not asked again until it expires.
 
 | Command | What it does |
 |---|---|
-| `python3 web_app.py` | Order groceries in a browser |
-| `python3 order_instamart.py` | Order groceries in the terminal |
-| `python3 order_instamart.py --dry-run` | Walk the whole flow without writing the cart or ordering |
-| `python3 order_instamart.py --budget 500` | Cap the order at your own limit |
-| `python3 order_instamart.py --whoami` | Show which Swiggy account is signed in |
-| `python3 order_instamart.py --login` | Sign in as a different number |
-| `python3 order_instamart.py --logout` | Sign out |
-| `python3 probe_instamart.py` | Read-only diagnostics: dump every tool's raw response |
+| `python3 -m mealwise` | Order groceries in a browser |
+| `python3 -m mealwise.cli` | Order groceries in the terminal |
+| `python3 -m mealwise.cli --dry-run` | Walk the whole flow without writing the cart or ordering |
+| `python3 -m mealwise.cli --budget 500` | Cap the order at your own limit |
+| `python3 -m mealwise.cli --whoami` | Show which Swiggy account is signed in |
+| `python3 -m mealwise.cli --login` | Sign in as a different number |
+| `python3 -m mealwise.cli --logout` | Sign out |
+| `python3 -m mealwise.probe` | Read-only diagnostics: dump every tool's raw response |
 
-`--dry-run` works the same way on `web_app.py`. There is no `--budget` there:
+`--dry-run` works the same way on the web UI. There is no `--budget` there:
 the ceiling is Swiggy's own ₹1000 refusal, and it is mentioned only when a
 cart actually breaches it.
 
 ## The web UI
 
 ```bash
-python3 web_app.py                 # opens your browser at 127.0.0.1:8765
-python3 web_app.py --dry-run       # walk everything; never writes, never orders
-python3 web_app.py --port 9000     # if 8765 is taken
+python3 -m mealwise                 # opens your browser at 127.0.0.1:8765
+python3 -m mealwise --dry-run       # walk everything; never writes, never orders
+python3 -m mealwise --port 9000     # if 8765 is taken
 ```
 
 Sign in once with your phone number and OTP, then:
@@ -173,11 +173,11 @@ Sessions are kept per Swiggy account, so two people on the same machine do not
 evict each other:
 
 ```bash
-python3 order_instamart.py --accounts        # who is signed in here
-python3 order_instamart.py --login           # add another account
-python3 order_instamart.py --use <user_id>   # switch back, no OTP needed
-python3 order_instamart.py --logout          # sign out of the active account
-python3 order_instamart.py --logout --all    # sign out of every account
+python3 -m mealwise.cli --accounts        # who is signed in here
+python3 -m mealwise.cli --login           # add another account
+python3 -m mealwise.cli --use <user_id>   # switch back, no OTP needed
+python3 -m mealwise.cli --logout          # sign out of the active account
+python3 -m mealwise.cli --logout --all    # sign out of every account
 ```
 
 Sessions last **5 days**. Swiggy issues no refresh tokens, so after that you
@@ -217,20 +217,56 @@ Use `--dry-run` to explore without any risk.
 
 ## For developers
 
-`INSTAMART_NOTES.md` records how the Instamart MCP actually behaves, verified
-against a live account — including where the official docs are wrong, which
-response fields cannot be trusted, and the assumptions that broke. Read it
-before changing anything.
+[docs/instamart-notes.md](docs/instamart-notes.md) records how the Instamart
+MCP actually behaves, verified against a live account — including where the
+official docs are wrong, which response fields cannot be trusted, and the
+assumptions that broke. Read it before changing anything.
 
-| File | Role |
-|---|---|
-| `web_app.py` | The web UI: routes, session state, split OAuth flow |
-| `recipe.py` | Dish → shopping list, via Gemini over stdlib `urllib` |
-| `web_ui.py` | HTML and CSS for the web UI; no JavaScript |
-| `order_instamart.py` | The interactive CLI |
-| `instamart.py` | Cart planning, the ₹1000 limit, fee helpers |
-| `parse_order.py` | Order sentence → items, sizes, counts |
-| `money.py` | Rupee parsing, in integer paise |
-| `swiggy_mcp.py` | JSON-RPC transport for Swiggy MCP |
-| `swiggy_auth.py` | OAuth 2.1 + PKCE sign-in and session storage |
-| `probe_instamart.py` | Read-only diagnostics |
+```
+mealwise/            the application, one package
+  __main__.py          `python3 -m mealwise` - the web UI
+  web_app.py           web UI: routes, session state, split OAuth flow
+  web_ui.py            HTML and CSS for the web UI; no JavaScript
+  cli.py               the interactive terminal version
+  instamart.py         cart planning, the ₹1000 gate, fee helpers
+  parse_order.py       order sentence → items, sizes, counts
+  recipe.py            dish → shopping list, via Gemini over stdlib urllib
+  money.py             rupee parsing, in integer paise
+  swiggy_mcp.py        JSON-RPC transport for Swiggy MCP
+  swiggy_auth.py       OAuth 2.1 + PKCE sign-in and session storage
+  probe.py             read-only diagnostics
+docs/
+  architecture.md      how the pieces fit, and the rules that matter
+  instamart-notes.md   how the API really behaves, verified live
+tests/                 offline; no network, no live account
+pyproject.toml         packaging and console scripts; no dependencies
+```
+
+Three layers, and nothing in a lower one imports from a higher one:
+**transport** (`swiggy_mcp`, `swiggy_auth`) → **engine** (`money`,
+`parse_order`, `instamart`, `recipe`) → **interface** (`web_app` + `web_ui`,
+`cli`). [docs/architecture.md](docs/architecture.md) draws it out, walks
+one order end to end, and lists the invariants worth knowing before you
+change anything.
+
+## Running the tests
+
+```bash
+python3 -m unittest discover -s tests -t .
+```
+
+Offline by design — no MCP call, no network, no live account, so it is safe
+to run anywhere. It covers money parsing, the order parser, the cart planner
+and its gate, the web cart actions, and that every page renders.
+
+## Installing it (optional)
+
+Running from the repo needs no install. If you would rather have commands on
+your `PATH`:
+
+```bash
+pip install -e .
+mealwise            # the web UI
+mealwise-cli        # the terminal version
+mealwise-probe      # read-only diagnostics
+```

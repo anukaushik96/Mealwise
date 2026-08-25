@@ -3,9 +3,9 @@
 Read-only by default. Nothing here mutates a cart or places an order:
 update_cart / clear_cart / checkout are deliberately NOT called.
 
-  python3 probe_instamart.py                 # schemas + read-only calls
-  python3 probe_instamart.py --query "milk"  # use a different search term
-  python3 probe_instamart.py --schemas-only  # tools/list only, no tool calls
+  python3 -m mealwise.probe                 # schemas + read-only calls
+  python3 -m mealwise.probe --query "milk"  # use a different search term
+  python3 -m mealwise.probe --schemas-only  # tools/list only, no tool calls
 
 Raw JSON for every call lands in probe_out/ so we can diff against the docs.
 """
@@ -16,8 +16,8 @@ import os
 import re
 import sys
 
-import swiggy_auth
-from swiggy_mcp import McpError, SwiggyMcp
+from . import swiggy_auth
+from .swiggy_mcp import McpError, SwiggyMcp
 
 # Dumps contain addresses, phone numbers and order history, so they must NOT
 # land in the project folder - this repo is shared. swiggy_auth owns the
@@ -79,7 +79,9 @@ def parse_addresses(payload):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        prog="python3 -m mealwise.probe",
+        description="Read-only diagnostics: dump every tool's raw response")
     parser.add_argument("--query", default="milk", help="search_products query")
     parser.add_argument("--schemas-only", action="store_true")
     parser.add_argument("--force-login", action="store_true")

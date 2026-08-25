@@ -23,7 +23,7 @@ import re
 import urllib.error
 import urllib.request
 
-import swiggy_auth
+from . import swiggy_auth
 
 ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
@@ -105,7 +105,7 @@ def is_recipe_request(text):
     parse alone would send every typo. So: it reads like a request AND
     nothing in it already looks like a sized product.
     """
-    from parse_order import parse_order      # local: avoids an import cycle
+    from .parse_order import parse_order      # local: avoids an import cycle
     if not _INTENT.search(text or ""):
         return False
     return not any(request.size for request in parse_order(text))

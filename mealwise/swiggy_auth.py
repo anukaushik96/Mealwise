@@ -50,8 +50,12 @@ PROBE_DIR = os.path.join(TOKEN_DIR, "probe")
 PREFS_DIR = os.path.join(TOKEN_DIR, "prefs")
 
 _LEGACY_SINGLE_FILE = os.path.join(TOKEN_DIR, "token.json")
+# Written by a much older version that kept the token beside the code. The
+# modules moved into mealwise/ since, so this points a directory up - at the
+# project root, where such a file would actually be.
 _LEGACY_REPO_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), ".swiggy_token.json")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".swiggy_token.json")
 
 
 class AuthError(Exception):
@@ -140,7 +144,7 @@ def authorize_interactive(meta, client_id, wait_seconds=300):
 
     Everything else in this module (discover, register_client, make_pkce,
     exchange_code) is protocol, not interaction, and carries over unchanged.
-    See section 9 of INSTAMART_NOTES.md before changing this.
+    See section 9 of docs/instamart-notes.md before changing this.
     """
     verifier, challenge = make_pkce()
     state = secrets.token_urlsafe(16)
@@ -356,7 +360,7 @@ def store_token(token, client_id):
 #
 # So the flow splits in two - begin_login() builds the URL and hands back the
 # PKCE verifier, finish_login() completes the exchange when Swiggy redirects
-# back. This is the shape section 9 of INSTAMART_NOTES.md says production
+# back. This is the shape section 9 of docs/instamart-notes.md says production
 # access will force (two requests, a persisted verifier, no print()); the only
 # development-mode part left is that the redirect URI is still a loopback one.
 # Nothing below is new protocol - it reuses discover/register_client/make_pkce/

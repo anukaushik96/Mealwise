@@ -19,7 +19,7 @@ be rendered (and eyeballed) without a live account.
 
 from html import escape
 
-from money import rupees
+from .money import rupees
 
 BRAND = "Mealwise"
 ACCENT = "#fc8019"          # Swiggy orange
