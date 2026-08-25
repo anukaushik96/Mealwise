@@ -25,7 +25,9 @@ what hosting this would actually require.
 """
 
 import argparse
+import os
 import secrets
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -1185,6 +1187,28 @@ def _split_city_and_pin(parts):
     return city, postal
 
 
+def open_browser(url):
+    """Open the app in a browser, and report honestly if we could not.
+
+    On macOS the stdlib picks MacOSXOSAScript, which drives the browser over
+    AppleScript - and that does nothing at all, silently, unless the terminal
+    running this has been granted Automation permission. /usr/bin/open goes
+    through Launch Services instead, needs no permission, and is what actually
+    works. Try it first, keep webbrowser as the fallback elsewhere, and never
+    swallow the failure: the URL is the one thing the user needs.
+    """
+    if sys.platform == "darwin" and os.path.exists("/usr/bin/open"):
+        try:
+            if subprocess.call(["/usr/bin/open", url]) == 0:
+                return True
+        except OSError:
+            pass
+    try:
+        return bool(webbrowser.open(url))
+    except Exception:
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(description="Web UI for Instamart ordering")
     ap.add_argument("--port", type=int, default=swiggy_auth.REDIRECT_PORT,
@@ -1218,11 +1242,8 @@ def main():
         print("Ceiling for this session: %s" % rupees(budget_paise))
     print("Sessions are stored under %s, never in this folder." % swiggy_auth.TOKEN_DIR)
     print("Press Ctrl-C to stop.")
-    if not args.no_browser:
-        try:
-            webbrowser.open(url)
-        except Exception:
-            pass
+    if not args.no_browser and not open_browser(url):
+        print("Could not open a browser for you - open %s yourself." % url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
