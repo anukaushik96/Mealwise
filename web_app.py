@@ -27,6 +27,8 @@ what hosting this would actually require.
 import argparse
 import os
 import secrets
+import signal
+import socket
 import subprocess
 import sys
 import time
@@ -1223,6 +1225,83 @@ def _split_city_and_pin(parts):
     return city, postal
 
 
+def _lsof(port):
+    """PIDs listening on a TCP port, via lsof. Empty if lsof is unavailable."""
+    for binary in ("lsof", "/usr/sbin/lsof"):
+        try:
+            out = subprocess.check_output(
+                [binary, "-nP", "-tiTCP:%d" % port, "-sTCP:LISTEN"],
+                stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        return [int(pid) for pid in out.split() if pid.strip().isdigit()]
+    return []
+
+
+def stale_instance(port):
+    """PID of an EARLIER COPY OF THIS APP holding the port, or None.
+
+    Restarting is the normal way to pick up a change, and a leftover instance
+    makes the new one die at bind time with a message that scrolls past. The
+    symptom is baffling: no browser opens and the page still shows the old
+    code, because the old server is the one answering.
+
+    Only ever matches this program. Anything else on the port is somebody
+    else's business and is reported rather than killed.
+    """
+    for pid in _lsof(port):
+        if pid == os.getpid():
+            continue
+        try:
+            command = subprocess.check_output(
+                ["ps", "-o", "command=", "-p", str(pid)],
+                stderr=subprocess.DEVNULL).decode("utf-8", "replace")
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        if os.path.basename(__file__).split(".")[0] in command:
+            return pid
+    return None
+
+
+def port_free(port):
+    """Can we actually bind it? The only test that means anything.
+
+    lsof reporting no listener is not the same thing: after the old process
+    dies its socket can linger a moment, and bind still fails with EADDRINUSE.
+    Binding a throwaway socket is the real answer - and since it never listens
+    or connects, closing it leaves nothing in TIME_WAIT.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def replace_stale_instance(port, wait=5.0):
+    """Stop our own leftover server so this one can bind. True if the port is free."""
+    pid = stale_instance(port)
+    if pid is None:
+        return False
+    print("An older copy of this app (pid %d) still holds port %d - stopping it."
+          % (pid, port))
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        print("  could not stop it: %s" % exc)
+        return False
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if port_free(port):
+            return True
+        time.sleep(0.2)
+    return port_free(port)
+
+
 def open_browser(url):
     """Open the app in a browser, and report honestly if we could not.
 
@@ -1264,11 +1343,25 @@ def main():
     # no login of its own, so it must not be reachable from the network.
     try:
         server = HTTPServer(("127.0.0.1", args.port), Handler)
-    except OSError as exc:
-        print("Cannot listen on 127.0.0.1:%d - %s" % (args.port, exc))
-        print("Something else is using it (the CLI's login server uses %d too)."
-              % swiggy_auth.REDIRECT_PORT)
-        return 1
+    except OSError:
+        # Nearly always our own previous run. Take the port over rather than
+        # exiting with a message that scrolls away while the old code keeps
+        # serving the browser.
+        if replace_stale_instance(args.port):
+            try:
+                server = HTTPServer(("127.0.0.1", args.port), Handler)
+            except OSError as exc:
+                print("Port %d is still busy: %s" % (args.port, exc))
+                return 1
+        else:
+            print("Cannot listen on 127.0.0.1:%d - something else is using it."
+                  % args.port)
+            print("That something is not this app. The CLI's login server uses "
+                  "%d too." % swiggy_auth.REDIRECT_PORT)
+            print("Find it with:  lsof -nP -iTCP:%d -sTCP:LISTEN" % args.port)
+            print("Or pick another port:  python3 %s --port 9000"
+                  % os.path.basename(__file__))
+            return 1
 
     url = "http://127.0.0.1:%d/" % args.port
     print("%s is running at %s" % (web_ui.BRAND, url))
