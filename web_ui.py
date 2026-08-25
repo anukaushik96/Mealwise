@@ -472,12 +472,18 @@ def home_page(ctx):
         "<textarea name=\"text\" autofocus placeholder=\"%s\">%s</textarea>"
         "<p class=\"small muted\">%s You confirm every item before anything is "
         "added.</p>"
-        "<button class=\"btn block\" type=\"submit\" style=\"margin-top:.6rem\">"
-        "Find these items</button></form></div>%s"
+        "<button class=\"btn block\" type=\"submit\" name=\"mode\" value=\"list\" "
+        "style=\"margin-top:.6rem\">Find these items</button>%s</form></div>%s"
         % (notes(ctx), steps("List"),
            "What else do you need?" if ctx.get("lines") else "What do you need?",
            subtitle, nonce_field(ctx),
-           placeholder, esc(ctx.get("draft") or ""), hint, cart)
+           placeholder, esc(ctx.get("draft") or ""), hint,
+           # Detection cannot see a dish in "bread omelette" - there is no verb
+           # in it. This button is how you say so outright.
+           ("<button class=\"btn ghost block\" type=\"submit\" name=\"mode\" "
+            "value=\"recipe\" style=\"margin-top:.5rem\">"
+            "Work out the ingredients</button>" if ctx.get("recipes_on") else ""),
+           cart)
     )
     return page(BRAND, body, ctx=ctx)
 
@@ -654,15 +660,38 @@ def cart_page(ctx, view):
                      % "".join("<li>%s</li>" % esc(w) for w in view["warnings"]))
 
     if view.get("foreign"):
-        gate += note("warn",
-                     "<b>%d item%s in your Swiggy cart came from somewhere else"
-                     "</b> - the phone app, most likely. %s marked "
-                     "&ldquo;added elsewhere&rdquo; below, and included in the "
-                     "total. Removing one empties the cart on Swiggy&rsquo;s "
-                     "side and writes back only your basket."
-                     % (len(view["foreign"]),
-                        "" if len(view["foreign"]) == 1 else "s",
-                        "It is" if len(view["foreign"]) == 1 else "They are"))
+        count = len(view["foreign"])
+        one = count == 1
+        if view.get("strangers_are_free"):
+            # Swiggy's Item Total came to exactly our own basket, so the
+            # stranger is being held but not charged for. Say that plainly -
+            # claiming otherwise would invent a charge.
+            gate += note("info",
+                         "<b>%d item%s in your Swiggy cart came from somewhere "
+                         "else</b> - the phone app, most likely. Swiggy is "
+                         "<b>not charging</b> for %s: the Item Total below "
+                         "covers only your basket. Removing %s just tidies the "
+                         "cart."
+                         % (count, "" if one else "s",
+                            "it" if one else "them",
+                            "it" if one else "them"))
+        else:
+            gate += note("warn",
+                         "<b>%d item%s in your Swiggy cart came from somewhere "
+                         "else</b> - the phone app, most likely - and %s in the "
+                         "Item Total below, so you would be paying for %s. "
+                         "Removing %s empties the cart on Swiggy&rsquo;s side "
+                         "and writes back only your basket."
+                         % (count, "" if one else "s",
+                            "it is" if one else "they are",
+                            "it" if one else "them",
+                            "it" if one else "them"))
+
+    if view.get("unbilled_paise"):
+        gate += note("info", "The rows above come to %s more than the Item "
+                             "Total. Swiggy is holding something it is not "
+                             "billing - the bill is what you pay."
+                     % rupees(view["unbilled_paise"]))
 
     if view["drift"]:
         gate += note("info", "The running estimate said %s; the server says %s. "
@@ -707,10 +736,14 @@ def cart_row(ctx, row):
     with the rows above it.
     """
     tags = ""
-    if not row["in_stock"]:
-        tags += ("<span class=\"tag grey\">out of stock - not billed</span>")
     if not row["ours"]:
         tags += "<span class=\"tag warnish\">added elsewhere</span>"
+    if not row["in_stock"]:
+        tags += "<span class=\"tag grey\">out of stock</span>"
+    # Whether it is in the bill is the only part that costs money, so say that
+    # rather than leaving the reader to reconcile the rows against the total.
+    if not row.get("billed", True):
+        tags += "<span class=\"tag grey\">not in the bill</span>"
 
     if row["ours"]:
         controls = (

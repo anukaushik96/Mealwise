@@ -340,9 +340,12 @@ class App(object):
                 "rows": [{"name": l["name"], "price": l["price"],
                           "quantity": l["quantity"], "image": l.get("image"),
                           "max_quantity": l.get("maxQuantity") or 99,
-                          "ours": True, "index": i, "in_stock": True}
+                          "ours": True, "index": i, "in_stock": True,
+                          "billed": True}
                          for i, l in enumerate(self.planner.lines)],
                 "foreign": [],
+                "strangers_are_free": False,
+                "unbilled_paise": 0,
                 "bill_lines": [("Item total", rupees(status.item_total)), fee_line],
                 "to_pay": status.projected,
                 "projected": status.projected,
@@ -368,9 +371,34 @@ class App(object):
         if not bill:
             bill = [("Item total", rupees(cart_item_total(cart)))]
         rows = self.cart_rows(cart)
+        # Is a stranger actually being charged for? Do not guess - subtract.
+        #
+        # Observed live 2026-08-25: a Laadi Pav sat in items[] with
+        # isInStockAndAvailable true, at the same storeId as everything else,
+        # and was NOT in the Item Total - which came to exactly the client's
+        # own basket. So items[] can list something the bill excludes, and the
+        # in-stock flag does not explain it. Section 1.6 warned that items[]
+        # holds entries the server does not bill; this says the same thing
+        # about cart membership itself.
+        #
+        # Telling someone they are paying Rs 69 they are not is as bad as
+        # hiding it, so the label comes from the difference between what the
+        # cart holds and what the cart bills.
+        billed_total = cart_item_total(cart)
+        rows_total = sum(r["price"] * r["quantity"] for r in rows)
+        foreign = [r for r in rows if not r["ours"]]
+        foreign_total = sum(r["price"] * r["quantity"] for r in foreign)
+        unbilled = rows_total - billed_total
+        strangers_are_free = bool(foreign) and abs(unbilled - foreign_total) < 100
+        for row in rows:
+            row["billed"] = row["in_stock"] and not (
+                strangers_are_free and not row["ours"])
         return {
             "rows": rows,
-            "foreign": [r for r in rows if not r["ours"]],
+            "foreign": foreign,
+            "strangers_are_free": strangers_are_free,
+            # anything the cart holds but does not bill, beyond the strangers
+            "unbilled_paise": max(0, unbilled - (foreign_total if strangers_are_free else 0)),
             "bill_lines": bill,
             "to_pay": to_pay,
             "projected": projected,
@@ -815,7 +843,15 @@ class Handler(BaseHTTPRequestHandler):
             app.say("warn", "Type what you need first.")
             raise Redirect("/")
 
-        if recipe.available() and recipe.is_recipe_request(text):
+        # "bread omelette" is a dish, but it contains no verb to detect - a
+        # bare dish name looks exactly like a product name. So detection
+        # handles the phrasings it can ("I want to make ...") and the button
+        # covers the rest, which is the only way to be sure.
+        asked = form.get("mode") == "recipe"
+        if asked and not recipe.available():
+            app.say("warn", "No Gemini API key is configured, so ingredients "
+                            "cannot be worked out. Reading it as a list.")
+        if recipe.available() and (asked or recipe.is_recipe_request(text)):
             try:
                 lines = recipe.expand(text)
             except recipe.RecipeError as exc:
