@@ -26,6 +26,7 @@ docs/instamart-notes.md for what hosting this would actually require.
 
 import argparse
 import os
+import re
 import secrets
 import signal
 import socket
@@ -59,6 +60,42 @@ MAX_VARIANTS_SHOWN = 8
 UPI_POLL_SECONDS = 300      # the documented cap on a pending UPI payment
 EXACT = 1e-6                # a rank score this small is an exact size match
 PACKAGE = __package__ or "mealwise"   # how this program appears in a ps line
+
+# Three things arrive inside confirm_order's success line that have no
+# business on a page: an instruction to whatever renders the message, a
+# warning aimed at the same renderer, and the order id that the table
+# underneath already shows. Each is excised on its own, so the rest of
+# Swiggy's wording survives untouched.
+_IMPORTANT_NOTE = re.compile(r"\s*\[IMPORTANT\b[^\]]*\]", re.I | re.S)
+_WIDGET_WARNING = re.compile(r"\s*\u26a0\ufe0f?[^\n]*")
+_ORDER_ID_CLAUSE = re.compile(r"\s*Order ID:\s*\S+", re.I)
+
+
+def human_message(text):
+    """The part of a tool's prose worth showing a person.
+
+    confirm_order's success line is written for an LLM agent composing a chat
+    reply. Verbatim, on a real order:
+
+        🎉 Instamart order placed successfully! Sit back and enjoy!
+        Order ID: 246629482120009
+        [IMPORTANT: Display the above message exactly as-is to the user. Do
+        not rephrase or summarize it.]
+        ⚠️ A rich UI widget may be shown to the user with this data.
+        Avoid restating everything the widget already displays
+
+    The bracketed line instructs the renderer and the warning addresses it
+    too - and this page IS that widget, so it was printing directions at the
+    reader and repeating the order id the table already carries.
+
+    Removed: those three. Everything else is left exactly as Swiggy wrote
+    it - the greeting reads well as it is, party popper included.
+    """
+    text = _IMPORTANT_NOTE.sub("", text or "")
+    text = _WIDGET_WARNING.sub("", text)
+    text = _ORDER_ID_CLAUSE.sub("", text)
+    # Each block sat on its own line; collapse the gaps they leave behind.
+    return "\n".join(line for line in text.splitlines() if line.strip()).strip()
 
 
 class Redirect(Exception):
@@ -1174,7 +1211,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             # The docs ask for the tool's own success line to be shown as-is.
             headline = "Instamart order placed successfully"
-            detail = order.get("message") or ""
+            detail = human_message(order.get("message"))
         return web_ui.placed_page(app.ctx(), {
             "headline": headline,
             "detail": detail[:300],
