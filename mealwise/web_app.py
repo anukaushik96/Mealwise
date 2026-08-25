@@ -772,7 +772,13 @@ class Handler(BaseHTTPRequestHandler):
             app.say("warn", "You have no saved addresses yet - add one to start.")
             raise Redirect("/address/new")
         app.ensure_planner()
-        return web_ui.home_page(app.ctx())
+        page = web_ui.home_page(app.ctx())
+        # The draft exists so a rejected sentence comes back in the box to be
+        # rewritten, not so it haunts the page forever. One render is enough:
+        # a refresh after that is someone starting again, and handing them
+        # their old words back looks like the app is stuck.
+        app.draft = ""
+        return page
 
     def act_login(self, form, query):
         app = self.app
