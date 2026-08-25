@@ -19,7 +19,6 @@ be rendered (and eyeballed) without a live account.
 
 from html import escape
 
-from instamart import CHECKOUT_LIMIT_PAISE
 from money import rupees
 
 BRAND = "Mealwise"
@@ -447,7 +446,7 @@ def home_page(ctx):
         cart = ("<div class=\"card\"><h2>In your basket</h2>%s%s"
                 "<div class=\"row end\" style=\"margin-top:.9rem\">"
                 "<a class=\"btn ghost\" href=\"/cart\">Go to cart &rarr;</a></div></div>"
-                % (rows, budget_meter(status)))
+                % (rows, basket_total(status)))
 
     # Only promise what is actually wired up: without a key the box is a
     # plain list box, and saying otherwise would be a lie in the placeholder.
@@ -482,38 +481,31 @@ def home_page(ctx):
     return page(BRAND, body, ctx=ctx)
 
 
-def budget_meter(status):
-    """A running total against the ceiling, drawn as one bar.
+def basket_total(status):
+    """What the basket comes to - and the limit only when it is in the way.
 
-    While fees are unmeasured this shows the item total and says so. It does
-    not show a fee, because there is no fee to show: Swiggy prices them per
-    cart, per address, per hour, and anything put here before that would be a
-    number the server never said.
+    No bar, no ceiling, no headroom. A running budget meter is noise on every
+    screen to warn about a line almost nobody reaches; Swiggy's Rs 1000
+    refusal is real, so it is said when it actually applies and not before.
+
+    While fees are unmeasured this shows the item total and says so, because
+    Swiggy prices fees per cart, per address, per hour - anything here before
+    that would be a number the server never gave us.
     """
     if status is None:
         return ""
-    limit = max(status.limit, 1)
-    pct = min(100, int(round(100.0 * status.projected / limit)))
     if status.measured:
-        headline = rupees(status.projected)
-        breakdown = "items %s + fees %s, priced by Swiggy" % (
+        headline, detail = rupees(status.projected), "items %s + fees %s, priced by Swiggy" % (
             rupees(status.item_total), rupees(status.fees))
-        footer = "%s of headroom left." % rupees(status.headroom)
     else:
-        headline = rupees(status.item_total)
-        breakdown = "items only - fees are added when Swiggy prices your cart"
-        footer = "%s under the ceiling before fees." % rupees(status.headroom)
-    return (
-        "<hr><div class=\"row\"><div class=\"grow\"><b>%s</b> "
-        "<span class=\"small muted\">%s</span></div>"
-        "<div class=\"small muted\">ceiling %s</div></div>"
-        "<div class=\"bar\"><i class=\"%s\" style=\"width:%d%%\"></i></div>"
-        "<div class=\"small %s\">%s</div>"
-        % (headline, breakdown, rupees(status.limit),
-           "" if status.ok else "over", pct,
-           "muted" if status.ok else "note bad",
-           footer if status.ok else esc(status.message()))
-    )
+        headline, detail = rupees(status.item_total), (
+            "items only - fees are added when Swiggy prices your cart")
+    breach = ("" if status.ok else
+              "<div class=\"note bad\" style=\"margin:.6rem 0 0\">%s</div>"
+              % esc(status.message()))
+    return ("<hr><div class=\"row\"><div class=\"grow\"><b>%s</b> "
+            "<span class=\"small muted\">%s</span></div></div>%s"
+            % (headline, detail, breach))
 
 
 def review_page(ctx, requests):
@@ -645,9 +637,6 @@ def cart_page(ctx, view):
         gate = note("bad", "<b>Over the &#8377;1,000 limit.</b> %s Swiggy refuses "
                            "checkout at &#8377;1,000 or more, so remove something below."
                     % esc(view["gate_message"]))
-    elif view["near_limit"]:
-        gate = note("warn", "Only %s below the &#8377;1,000 checkout limit."
-                    % rupees(CHECKOUT_LIMIT_PAISE - to_pay))
 
     if view["warnings"]:
         gate += note("warn", "<b>Swiggy changed part of this cart:</b><ul>%s</ul>"

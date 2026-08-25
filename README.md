@@ -42,15 +42,16 @@ itself. The session lasts 5 days, so you are not asked again until it expires.
 | `python3 order_instamart.py --logout` | Sign out |
 | `python3 probe_instamart.py` | Read-only diagnostics: dump every tool's raw response |
 
-`--dry-run` and `--budget` work the same way on `web_app.py`.
+`--dry-run` works the same way on `web_app.py`. There is no `--budget` there:
+the ceiling is Swiggy's own ₹1000 refusal, and it is mentioned only when a
+cart actually breaches it.
 
 ## The web UI
 
 ```bash
 python3 web_app.py                 # opens your browser at 127.0.0.1:8765
 python3 web_app.py --dry-run       # walk everything; never writes, never orders
-python3 web_app.py --budget 500    # your own ceiling, under the ₹999 max
-python3 web_app.py --port 9000      # if 8765 is taken
+python3 web_app.py --port 9000     # if 8765 is taken
 ```
 
 Sign in once with your phone number and OTP, then:
@@ -197,9 +198,11 @@ at Swiggy's end; the token stays valid until it expires.
   than in groceries. The app measures the real fee on your first item and
   keeps the running total honest.
 - **Refuses what Swiggy would refuse.** Instamart rejects orders at ₹1000 or
-  above. You are told while shopping, not at checkout, and told exactly how
-  much to remove. If a surge fee later pushes the real total over the line,
-  the cart says so and the checkout button goes away.
+  above, so an item that would breach it is refused as you add, with the exact
+  amount to remove. Nothing about the limit is shown until it is in the way -
+  no meter, no ceiling, no "you are getting close". If a surge fee later
+  pushes the real total over the line, the cart says so and the checkout
+  button goes away.
 - **Never orders without you.** Placing an order needs the exact amount shown
   and the word `yes` typed in full.
 

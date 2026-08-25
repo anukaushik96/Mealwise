@@ -69,9 +69,8 @@ class Redirect(Exception):
 
 
 class App(object):
-    def __init__(self, port, budget_paise=None, dry_run=False):
+    def __init__(self, port, dry_run=False):
         self.port = port
-        self.budget_paise = budget_paise
         self.dry_run = dry_run
         # An attacker's page can POST to this port but cannot read this token,
         # so requiring it on every mutation is what keeps checkout ours.
@@ -233,7 +232,7 @@ class App(object):
                 self.say("warn", "Could not clear the old cart: %s" % exc)
         # Fees vary by address and time of day, so a measurement made at the
         # old address is not evidence about this one.
-        self.planner = CartPlanner(address_id, 0, False, self.budget_paise)
+        self.planner = CartPlanner(address_id, 0, False)
         if had_lines and changed:
             self.say("warn", "Basket cleared - item ids are only valid for the "
                              "address they were found at, so this order starts fresh.")
@@ -259,7 +258,7 @@ class App(object):
 
     def ensure_planner(self):
         if self.planner is None:
-            self.planner = CartPlanner(self.address_id, 0, False, self.budget_paise)
+            self.planner = CartPlanner(self.address_id, 0, False)
         return self.planner
 
     # ------------------------------------------------------------ cart
@@ -355,7 +354,6 @@ class App(object):
                 "warnings": [],
                 "blocked": not status.ok,
                 "gate_message": status.message(),
-                "near_limit": False,
                 "payment_options": self.load_payment_options(),
             }
 
@@ -408,7 +406,6 @@ class App(object):
             "warnings": warnings,
             "blocked": to_pay >= CHECKOUT_LIMIT_PAISE or to_pay > self.planner.limit,
             "gate_message": status.message(),
-            "near_limit": 0 < CHECKOUT_LIMIT_PAISE - to_pay <= 10000,
             "payment_options": self.load_payment_options(),
         }
 
@@ -1324,16 +1321,13 @@ def main():
     ap = argparse.ArgumentParser(description="Web UI for Instamart ordering")
     ap.add_argument("--port", type=int, default=swiggy_auth.REDIRECT_PORT,
                     help="port to serve on (default %d)" % swiggy_auth.REDIRECT_PORT)
-    ap.add_argument("--budget", type=float, default=None,
-                    help="your own ceiling in rupees (capped at the Rs 999 payable max)")
     ap.add_argument("--dry-run", action="store_true",
                     help="walk the whole UI without writing the cart or ordering")
     ap.add_argument("--no-browser", action="store_true",
                     help="do not open a browser window")
     args = ap.parse_args()
 
-    budget_paise = int(round(args.budget * 100)) if args.budget else None
-    Handler.app = App(args.port, budget_paise, args.dry_run)
+    Handler.app = App(args.port, args.dry_run)
 
     # 127.0.0.1, not 0.0.0.0: this holds a live payment-capable session and has
     # no login of its own, so it must not be reachable from the network.
@@ -1363,8 +1357,6 @@ def main():
     print("%s is running at %s" % (web_ui.BRAND, url))
     if args.dry_run:
         print("DRY RUN - the cart is never written and no order can be placed.")
-    if budget_paise:
-        print("Ceiling for this session: %s" % rupees(budget_paise))
     print("Sessions are stored under %s, never in this folder." % swiggy_auth.TOKEN_DIR)
     print("Press Ctrl-C to stop.")
     if not args.no_browser and not open_browser(url):
