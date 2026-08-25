@@ -77,7 +77,7 @@ Sign in once with your phone number and OTP, then:
 
 ### Describing a dish instead of listing items
 
-Type `I want to make a mango smoothie` and you get back
+Say `I want to make a mango smoothie` and you get back
 `2 pieces mango, 500 ml milk, 400 g curd, 250 g honey` — shop pack sizes, not
 recipe amounts — on the same confirmation screen as anything you type
 yourself. Nothing is searched until you say yes.
@@ -101,9 +101,12 @@ so the standard-library-only promise still holds.
 
 Three things worth knowing:
 
-- **The model is only consulted when you describe rather than list.**
+- **The model is only consulted when you phrase it as a request.**
   `1 litre milk` never leaves your machine; `make me a smoothie` does. The
-  test suite asserts this both ways.
+  trigger is the verb — *make*, *cook*, *recipe for*, *what do I need for* —
+  so a bare dish name like `bread omelette` is searched as a product instead.
+  Name the dish in a sentence to get ingredients. The test suite asserts this
+  both ways.
 - **Only the dish phrase is sent.** Not your address, cart, order history or
   account number — asserted in the tests, and the whole request payload is
   built in one function in `recipe.py` so you can check it yourself.

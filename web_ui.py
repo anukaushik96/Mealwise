@@ -472,18 +472,12 @@ def home_page(ctx):
         "<textarea name=\"text\" autofocus placeholder=\"%s\">%s</textarea>"
         "<p class=\"small muted\">%s You confirm every item before anything is "
         "added.</p>"
-        "<button class=\"btn block\" type=\"submit\" name=\"mode\" value=\"list\" "
-        "style=\"margin-top:.6rem\">Find these items</button>%s</form></div>%s"
+        "<button class=\"btn block\" type=\"submit\" style=\"margin-top:.6rem\">"
+        "Find these items</button></form></div>%s"
         % (notes(ctx), steps("List"),
            "What else do you need?" if ctx.get("lines") else "What do you need?",
            subtitle, nonce_field(ctx),
-           placeholder, esc(ctx.get("draft") or ""), hint,
-           # Detection cannot see a dish in "bread omelette" - there is no verb
-           # in it. This button is how you say so outright.
-           ("<button class=\"btn ghost block\" type=\"submit\" name=\"mode\" "
-            "value=\"recipe\" style=\"margin-top:.5rem\">"
-            "Work out the ingredients</button>" if ctx.get("recipes_on") else ""),
-           cart)
+           placeholder, esc(ctx.get("draft") or ""), hint, cart)
     )
     return page(BRAND, body, ctx=ctx)
 

@@ -845,15 +845,11 @@ class Handler(BaseHTTPRequestHandler):
             app.say("warn", "Type what you need first.")
             raise Redirect("/")
 
-        # "bread omelette" is a dish, but it contains no verb to detect - a
-        # bare dish name looks exactly like a product name. So detection
-        # handles the phrasings it can ("I want to make ...") and the button
-        # covers the rest, which is the only way to be sure.
-        asked = form.get("mode") == "recipe"
-        if asked and not recipe.available():
-            app.say("warn", "No Gemini API key is configured, so ingredients "
-                            "cannot be worked out. Reading it as a list.")
-        if recipe.available() and (asked or recipe.is_recipe_request(text)):
+        # Detection is by phrasing: "I want to make ...", "recipe for ...".
+        # A bare dish name ("bread omelette") carries no verb and reads exactly
+        # like a product name, so it stays a product search - name the dish in
+        # a sentence to get ingredients.
+        if recipe.available() and recipe.is_recipe_request(text):
             try:
                 lines = recipe.expand(text)
             except recipe.RecipeError as exc:
