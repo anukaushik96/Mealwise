@@ -534,11 +534,9 @@ def review_page(ctx, requests):
                  "out by an AI, so check it. Quantities are shop pack sizes, "
                  "not recipe amounts. Nothing is searched or added until you "
                  "say yes." % esc(suggested.rstrip(".?! ")))
-        back = "Ask for something else"
     else:
         heading = "Did I read that right?"
         blurb = "Nothing is searched or added until you say yes."
-        back = "Edit the list"
     body = (
         "%s%s<h1>%s</h1>"
         "<p class=\"sub\">%s</p>"
@@ -549,12 +547,9 @@ def review_page(ctx, requests):
         "<textarea name=\"add\" rows=\"2\" placeholder=\"200 g vanilla ice cream, "
         "1 packet straws\"></textarea>"
         "<div class=\"row end\" style=\"margin-top:.7rem\">"
-        "<a class=\"btn ghost\" href=\"/\">%s</a>"
-        "<button class=\"btn ghost\" type=\"submit\" name=\"more\" value=\"1\">"
-        "Add to list</button>"
         "<button class=\"btn\" type=\"submit\">Yes, find these</button>"
         "</div></form></div>"
-        % (notes(ctx), steps("List"), heading, blurb, rows, nonce_field(ctx), back)
+        % (notes(ctx), steps("List"), heading, blurb, rows, nonce_field(ctx))
     )
     return page("Check your list - %s" % BRAND, body, ctx=ctx)
 

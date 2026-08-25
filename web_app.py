@@ -263,6 +263,42 @@ class App(object):
 
     # ------------------------------------------------------------ cart
 
+    def empty_cart(self):
+        """Drop every line here AND empty the cart on Swiggy's side.
+
+        Clearing the basket locally is not enough on its own. Every write to
+        Swiggy happens through push_cart, which only runs when there is
+        something to price - so the removal that takes the basket to zero
+        never reaches the account, and the items sit in the live cart, visible
+        on the phone and still chargeable, behind a page that says the cart is
+        empty.
+
+        clear_cart is the only lever that works here: an update_cart carrying
+        an empty items[] cannot be trusted to evict anything (field notes 1.7
+        watched a stranger survive a replace). It takes no parameters and
+        empties the whole cart, including anything added from another client.
+
+        Returns True when Swiggy confirmed it.
+        """
+        self.planner.lines = []
+        # A payment method was chosen for a cart that no longer exists.
+        self.payment = None
+        if self.dry_run:
+            return True
+        try:
+            guard(self.mcp().call_tool("clear_cart", {}), "clear_cart")
+        except McpError as exc:
+            self.say("bad", "Your basket is empty here, but Swiggy's own cart "
+                            "could not be cleared: %s" % exc)
+            return False
+        # Say it, because this reaches further than the row that was clicked:
+        # clear_cart empties the account's cart, so anything added from the
+        # phone app went with it. Deleting that silently is how someone finds
+        # out at checkout.
+        self.say("info", "Your Swiggy cart is empty now too - if anything had "
+                         "been added from the phone app, it is gone as well.")
+        return True
+
     def push_cart(self):
         """Write the basket, read back what Swiggy actually holds, and price it.
 
@@ -997,6 +1033,8 @@ class Handler(BaseHTTPRequestHandler):
             cap = line.get("maxQuantity") or 99
             if wanted <= 0:
                 lines.pop(index)
+                if not lines:
+                    app.empty_cart()
             elif wanted > cap:
                 app.say("warn", "Swiggy allows at most %d of %s per order."
                         % (cap, line["name"]))
@@ -1014,6 +1052,11 @@ class Handler(BaseHTTPRequestHandler):
         lines = app.planner.lines if app.planner else []
         if 0 <= index < len(lines):
             lines.pop(index)
+            # Taking out the last line has to reach Swiggy: there is nothing
+            # left for push_cart to write, so the cart would otherwise keep
+            # everything the page has just stopped showing.
+            if not lines:
+                app.empty_cart()
         raise Redirect("/cart")
 
     def act_rebuild(self, form, query):
