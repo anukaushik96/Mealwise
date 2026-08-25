@@ -349,15 +349,12 @@ class App(object):
                 "unbilled_paise": 0,
                 "bill_lines": [("Item total", rupees(status.item_total)), fee_line],
                 "to_pay": status.projected,
-                "projected": status.projected,
-                "drift": False,
                 "warnings": [],
                 "blocked": not status.ok,
                 "gate_message": status.message(),
                 "payment_options": self.load_payment_options(),
             }
 
-        projected = self.planner.status().projected
         cart, warnings = self.push_cart()
         to_pay = cart_to_pay(cart)
         if to_pay is None:
@@ -401,8 +398,6 @@ class App(object):
             "unbilled_paise": max(0, unbilled - (foreign_total if strangers_are_free else 0)),
             "bill_lines": bill,
             "to_pay": to_pay,
-            "projected": projected,
-            "drift": abs(to_pay - projected) >= 100,
             "warnings": warnings,
             "blocked": to_pay >= CHECKOUT_LIMIT_PAISE or to_pay > self.planner.limit,
             "gate_message": status.message(),

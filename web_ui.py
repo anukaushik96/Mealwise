@@ -676,10 +676,12 @@ def cart_page(ctx, view):
                              "billing - the bill is what you pay."
                      % rupees(view["unbilled_paise"]))
 
-    if view["drift"]:
-        gate += note("info", "The running estimate said %s; the server says %s. "
-                             "The server&rsquo;s figure is the one you pay."
-                     % (rupees(view["projected"]), rupees(to_pay)))
+    # No drift note here. It used to explain a gap between our running
+    # projection and the server's total, which made sense while the basket
+    # showed a meter - now that it does not, "the running estimate said Rs 237"
+    # cites a number the reader has never seen. The projection is bookkeeping
+    # for deciding what fits; the bill below is what they pay, and it is right
+    # there. A difference in their favour is not a discrepancy worth a banner.
 
     if ctx.get("payment"):
         pay_row = (
