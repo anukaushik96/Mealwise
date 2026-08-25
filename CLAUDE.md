@@ -20,7 +20,7 @@ Rules:
    introduce JavaScript, TypeScript, or any other language, and do not
    suggest tooling that requires them.
 
-Local verified reality: `INSTAMART_NOTES.md` records what the Instamart MCP
+Local verified reality: `docs/instamart-notes.md` records what the Instamart MCP
 actually did against a live account on 2026-08-24 - including the places the
 docs are wrong, the assumptions that broke, and which fields can be trusted.
 Read it alongside the docs before writing Instamart code. Where it contradicts
