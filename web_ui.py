@@ -19,7 +19,6 @@ be rendered (and eyeballed) without a live account.
 
 from html import escape
 
-from instamart import CHECKOUT_LIMIT_PAISE
 from money import rupees
 
 BRAND = "Mealwise"
@@ -224,6 +223,11 @@ form.inline{display:inline;margin:0}
 .pick .tag{font-size:11px;border-radius:99px;padding:.1rem .45rem;margin-left:.4rem;
   background:var(--ok-bg);color:var(--ok);font-weight:600;white-space:nowrap}
 .pick .tag.grey{background:var(--bg);color:var(--muted)}
+.line-name .tag{font-size:11px;border-radius:99px;padding:.1rem .45rem;
+  margin-left:.4rem;font-weight:600;white-space:nowrap;vertical-align:1px}
+.line-name .tag.grey{background:var(--bg);color:var(--muted)}
+.line-name .tag.warnish{background:var(--warn-bg);color:var(--warn)}
+.qty.static{border-style:dashed;color:var(--muted)}
 .pick .amt{margin-left:auto;text-align:right;font-variant-numeric:tabular-nums;
   font-weight:600;white-space:nowrap}
 .unit{display:block;font-size:12px;color:var(--muted)}
@@ -442,7 +446,7 @@ def home_page(ctx):
         cart = ("<div class=\"card\"><h2>In your basket</h2>%s%s"
                 "<div class=\"row end\" style=\"margin-top:.9rem\">"
                 "<a class=\"btn ghost\" href=\"/cart\">Go to cart &rarr;</a></div></div>"
-                % (rows, budget_meter(status)))
+                % (rows, basket_total(status)))
 
     # Only promise what is actually wired up: without a key the box is a
     # plain list box, and saying otherwise would be a lie in the placeholder.
@@ -461,7 +465,7 @@ def home_page(ctx):
                 "spelled-out numbers.")
 
     body = (
-        "%s%s<h1>What do you need?</h1>"
+        "%s%s<h1>%s</h1>"
         "<p class=\"sub\">%s</p>"
         "<div class=\"card\"><form method=\"post\" action=\"/order\">%s"
         "<textarea name=\"text\" autofocus placeholder=\"%s\">%s</textarea>"
@@ -469,44 +473,39 @@ def home_page(ctx):
         "added.</p>"
         "<button class=\"btn block\" type=\"submit\" style=\"margin-top:.6rem\">"
         "Find these items</button></form></div>%s"
-        % (notes(ctx), steps("List"), subtitle, nonce_field(ctx),
+        % (notes(ctx), steps("List"),
+           "What else do you need?" if ctx.get("lines") else "What do you need?",
+           subtitle, nonce_field(ctx),
            placeholder, esc(ctx.get("draft") or ""), hint, cart)
     )
     return page(BRAND, body, ctx=ctx)
 
 
-def budget_meter(status):
-    """A running total against the ceiling, drawn as one bar.
+def basket_total(status):
+    """What the basket comes to - and the limit only when it is in the way.
 
-    While fees are unmeasured this shows the item total and says so. It does
-    not show a fee, because there is no fee to show: Swiggy prices them per
-    cart, per address, per hour, and anything put here before that would be a
-    number the server never said.
+    No bar, no ceiling, no headroom. A running budget meter is noise on every
+    screen to warn about a line almost nobody reaches; Swiggy's Rs 1000
+    refusal is real, so it is said when it actually applies and not before.
+
+    While fees are unmeasured this shows the item total and says so, because
+    Swiggy prices fees per cart, per address, per hour - anything here before
+    that would be a number the server never gave us.
     """
     if status is None:
         return ""
-    limit = max(status.limit, 1)
-    pct = min(100, int(round(100.0 * status.projected / limit)))
     if status.measured:
-        headline = rupees(status.projected)
-        breakdown = "items %s + fees %s, priced by Swiggy" % (
+        headline, detail = rupees(status.projected), "items %s + fees %s, priced by Swiggy" % (
             rupees(status.item_total), rupees(status.fees))
-        footer = "%s of headroom left." % rupees(status.headroom)
     else:
-        headline = rupees(status.item_total)
-        breakdown = "items only - fees are added when Swiggy prices your cart"
-        footer = "%s under the ceiling before fees." % rupees(status.headroom)
-    return (
-        "<hr><div class=\"row\"><div class=\"grow\"><b>%s</b> "
-        "<span class=\"small muted\">%s</span></div>"
-        "<div class=\"small muted\">ceiling %s</div></div>"
-        "<div class=\"bar\"><i class=\"%s\" style=\"width:%d%%\"></i></div>"
-        "<div class=\"small %s\">%s</div>"
-        % (headline, breakdown, rupees(status.limit),
-           "" if status.ok else "over", pct,
-           "muted" if status.ok else "note bad",
-           footer if status.ok else esc(status.message()))
-    )
+        headline, detail = rupees(status.item_total), (
+            "items only - fees are added when Swiggy prices your cart")
+    breach = ("" if status.ok else
+              "<div class=\"note bad\" style=\"margin:.6rem 0 0\">%s</div>"
+              % esc(status.message()))
+    return ("<hr><div class=\"row\"><div class=\"grow\"><b>%s</b> "
+            "<span class=\"small muted\">%s</span></div></div>%s"
+            % (headline, detail, breach))
 
 
 def review_page(ctx, requests):
@@ -544,10 +543,18 @@ def review_page(ctx, requests):
         "%s%s<h1>%s</h1>"
         "<p class=\"sub\">%s</p>"
         "<div class=\"card\">%s<hr>"
-        "<div class=\"row end\"><a class=\"btn ghost\" href=\"/\">%s</a>"
-        "<form method=\"post\" action=\"/review\" class=\"inline\">%s"
-        "<button class=\"btn\" type=\"submit\">Yes, find these</button></form></div></div>"
-        % (notes(ctx), steps("List"), heading, blurb, rows, back, nonce_field(ctx))
+        "<form method=\"post\" action=\"/review\">%s"
+        "<label>Anything missing? <span class=\"opt\">added to the list above"
+        "</span></label>"
+        "<textarea name=\"add\" rows=\"2\" placeholder=\"200 g vanilla ice cream, "
+        "1 packet straws\"></textarea>"
+        "<div class=\"row end\" style=\"margin-top:.7rem\">"
+        "<a class=\"btn ghost\" href=\"/\">%s</a>"
+        "<button class=\"btn ghost\" type=\"submit\" name=\"more\" value=\"1\">"
+        "Add to list</button>"
+        "<button class=\"btn\" type=\"submit\">Yes, find these</button>"
+        "</div></form></div>"
+        % (notes(ctx), steps("List"), heading, blurb, rows, nonce_field(ctx), back)
     )
     return page("Check your list - %s" % BRAND, body, ctx=ctx)
 
@@ -607,28 +614,10 @@ def choose_page(ctx, item):
 
 def cart_page(ctx, view):
     """The real, server-priced cart plus the Rs 1000 gate."""
-    lines = "".join(
-        "<div class=\"line\">%s"
-        "<div class=\"line-main\"><div class=\"line-name\">%s</div>"
-        "<div class=\"line-meta\">%s each</div></div>"
-        "<form method=\"post\" action=\"/cart/qty\" class=\"inline\">%s"
-        "<input type=\"hidden\" name=\"index\" value=\"%d\">"
-        "<span class=\"qty\">"
-        "<button type=\"submit\" name=\"delta\" value=\"-1\" title=\"one fewer\">&minus;</button>"
-        "<span>%d</span>"
-        "<button type=\"submit\" name=\"delta\" value=\"1\" title=\"one more\">+</button>"
-        "</span></form>"
-        "<div class=\"line-amt\">%s<br>"
-        "<form method=\"post\" action=\"/cart/remove\" class=\"inline\">%s"
-        "<input type=\"hidden\" name=\"index\" value=\"%d\">"
-        "<button class=\"btn ghost sm\" type=\"submit\">Remove</button></form></div></div>"
-        % (thumb(line.get("image"), line["name"]),
-           esc(line["name"]), rupees(line["price"]), nonce_field(ctx), index,
-           line["quantity"], rupees(line["price"] * line["quantity"]),
-           nonce_field(ctx), index)
-        for index, line in enumerate(ctx.get("lines") or []))
+    rows = (view or {}).get("rows") or []
+    lines = "".join(cart_row(ctx, row) for row in rows)
 
-    if not lines:
+    if not rows:
         body = ("%s%s<h1>Your cart is empty</h1>"
                 "<p class=\"sub\">Nothing has been ordered.</p>"
                 "<a class=\"btn\" href=\"/\">Start a list</a>"
@@ -648,18 +637,51 @@ def cart_page(ctx, view):
         gate = note("bad", "<b>Over the &#8377;1,000 limit.</b> %s Swiggy refuses "
                            "checkout at &#8377;1,000 or more, so remove something below."
                     % esc(view["gate_message"]))
-    elif view["near_limit"]:
-        gate = note("warn", "Only %s below the &#8377;1,000 checkout limit."
-                    % rupees(CHECKOUT_LIMIT_PAISE - to_pay))
 
     if view["warnings"]:
         gate += note("warn", "<b>Swiggy changed part of this cart:</b><ul>%s</ul>"
                      % "".join("<li>%s</li>" % esc(w) for w in view["warnings"]))
 
-    if view["drift"]:
-        gate += note("info", "The running estimate said %s; the server says %s. "
-                             "The server&rsquo;s figure is the one you pay."
-                     % (rupees(view["projected"]), rupees(to_pay)))
+    if view.get("foreign"):
+        count = len(view["foreign"])
+        one = count == 1
+        if view.get("strangers_are_free"):
+            # Swiggy's Item Total came to exactly our own basket, so the
+            # stranger is being held but not charged for. Say that plainly -
+            # claiming otherwise would invent a charge.
+            gate += note("info",
+                         "<b>%d item%s in your Swiggy cart came from somewhere "
+                         "else</b> - the phone app, most likely. Swiggy is "
+                         "<b>not charging</b> for %s: the Item Total below "
+                         "covers only your basket. Removing %s just tidies the "
+                         "cart."
+                         % (count, "" if one else "s",
+                            "it" if one else "them",
+                            "it" if one else "them"))
+        else:
+            gate += note("warn",
+                         "<b>%d item%s in your Swiggy cart came from somewhere "
+                         "else</b> - the phone app, most likely - and %s in the "
+                         "Item Total below, so you would be paying for %s. "
+                         "Removing %s empties the cart on Swiggy&rsquo;s side "
+                         "and writes back only your basket."
+                         % (count, "" if one else "s",
+                            "it is" if one else "they are",
+                            "it" if one else "them",
+                            "it" if one else "them"))
+
+    if view.get("unbilled_paise"):
+        gate += note("info", "The rows above come to %s more than the Item "
+                             "Total. Swiggy is holding something it is not "
+                             "billing - the bill is what you pay."
+                     % rupees(view["unbilled_paise"]))
+
+    # No drift note here. It used to explain a gap between our running
+    # projection and the server's total, which made sense while the basket
+    # showed a meter - now that it does not, "the running estimate said Rs 237"
+    # cites a number the reader has never seen. The projection is bookkeeping
+    # for deciding what fits; the bill below is what they pay, and it is right
+    # there. A difference in their favour is not a discrepancy worth a banner.
 
     if ctx.get("payment"):
         pay_row = (
@@ -682,12 +704,60 @@ def cart_page(ctx, view):
     body = (
         "%s%s<h1>Your cart</h1>"
         "<p class=\"sub\">Priced by Swiggy just now, at %s.</p>%s"
-        "<div class=\"card\">%s</div>"
+        "<div class=\"card\">%s<hr>"
+        "<a class=\"btn ghost block\" href=\"/\">+ Add more items</a></div>"
         "<div class=\"card\"><h2>Bill</h2>%s%s</div>%s"
         % (notes(ctx), steps("Cart"), esc(ctx.get("address_label") or "your address"),
            gate, lines, bill, pay_row, payment_modal(ctx, view["payment_options"]))
     )
     return page("Cart - %s" % BRAND, body, ctx=ctx)
+
+
+def cart_row(ctx, row):
+    """One cart line. Ours gets controls; a stranger gets an explanation.
+
+    An item this session did not add still appears here, because Swiggy is
+    billing for it either way. Hiding it is how a total ends up disagreeing
+    with the rows above it.
+    """
+    tags = ""
+    if not row["ours"]:
+        tags += "<span class=\"tag warnish\">added elsewhere</span>"
+    if not row["in_stock"]:
+        tags += "<span class=\"tag grey\">out of stock</span>"
+    # Whether it is in the bill is the only part that costs money, so say that
+    # rather than leaving the reader to reconcile the rows against the total.
+    if not row.get("billed", True):
+        tags += "<span class=\"tag grey\">not in the bill</span>"
+
+    if row["ours"]:
+        controls = (
+            "<form method=\"post\" action=\"/cart/qty\" class=\"inline\">%s"
+            "<input type=\"hidden\" name=\"index\" value=\"%d\">"
+            "<span class=\"qty\">"
+            "<button type=\"submit\" name=\"delta\" value=\"-1\" "
+            "title=\"one fewer\">&minus;</button><span>%d</span>"
+            "<button type=\"submit\" name=\"delta\" value=\"1\" "
+            "title=\"one more\">+</button></span></form>"
+            % (nonce_field(ctx), row["index"], row["quantity"]))
+        action = ("<form method=\"post\" action=\"/cart/remove\" class=\"inline\">%s"
+                  "<input type=\"hidden\" name=\"index\" value=\"%d\">"
+                  "<button class=\"btn ghost sm\" type=\"submit\">Remove</button>"
+                  "</form>" % (nonce_field(ctx), row["index"]))
+    else:
+        controls = "<span class=\"qty static\"><span>%d</span></span>" % row["quantity"]
+        action = ("<form method=\"post\" action=\"/cart/rebuild\" class=\"inline\">%s"
+                  "<button class=\"btn ghost sm\" type=\"submit\" "
+                  "title=\"Empty the Swiggy cart and write back only your basket\">"
+                  "Remove</button></form>" % nonce_field(ctx))
+
+    return ("<div class=\"line\">%s"
+            "<div class=\"line-main\"><div class=\"line-name\">%s%s</div>"
+            "<div class=\"line-meta\">%s each</div></div>%s"
+            "<div class=\"line-amt\">%s<br>%s</div></div>"
+            % (thumb(row.get("image"), row["name"]), esc(row["name"]), tags,
+               rupees(row["price"]), controls,
+               rupees(row["price"] * row["quantity"]), action))
 
 
 def payment_modal(ctx, options):

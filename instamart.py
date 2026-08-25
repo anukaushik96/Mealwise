@@ -131,21 +131,46 @@ class CartPlanner(object):
         """Check an add WITHOUT applying it - the pre-flight the UI needs."""
         return self.status(extra_paise=price_paise * quantity)
 
+    def find(self, spin_id, sku_id):
+        """The existing line for this exact shelf item, if any."""
+        for line in self.lines:
+            if line["spinId"] == spin_id and line["skuId"] == sku_id:
+                return line
+        return None
+
     def add(self, spin_id, sku_id, name, price_paise, quantity=1,
             max_quantity=None, strict=True):
-        """Add an item. Returns BudgetStatus; raises BudgetExceeded if strict."""
+        """Add an item. Returns BudgetStatus; raises BudgetExceeded if strict.
+
+        Adding something already in the basket raises that line's quantity
+        instead of appending a second one. Two lines carrying the same spinId
+        is not a shape update_cart is documented to accept, and it would read
+        as a duplicate row to the user regardless - which is easy to reach now
+        that a list can be added to in several passes.
+        """
         if max_quantity is not None and quantity > max_quantity:
             raise ValueError("%s allows at most %d per order (asked %d)"
                              % (name, max_quantity, quantity))
-        probe = self.would_fit(price_paise, quantity)
+        existing = self.find(spin_id, sku_id)
+        # Only ever charge for what is actually being added - if the line is
+        # already at Swiggy's per-order cap, that is nothing.
+        added = quantity
+        if existing is not None and max_quantity is not None:
+            added = max(0, min(quantity, max_quantity - existing["quantity"]))
+
+        probe = self.would_fit(price_paise, added)
         if not probe.ok:
             if strict:
                 raise BudgetExceeded(probe)
             return probe
-        self.lines.append({
-            "spinId": spin_id, "skuId": sku_id, "name": name,
-            "price": price_paise, "quantity": quantity,
-        })
+
+        if existing is not None:
+            existing["quantity"] += added
+        else:
+            self.lines.append({
+                "spinId": spin_id, "skuId": sku_id, "name": name,
+                "price": price_paise, "quantity": added,
+            })
         return self.status()
 
     def remove(self, spin_id):

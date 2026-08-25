@@ -25,7 +25,11 @@ what hosting this would actually require.
 """
 
 import argparse
+import os
 import secrets
+import signal
+import socket
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -65,9 +69,8 @@ class Redirect(Exception):
 
 
 class App(object):
-    def __init__(self, port, budget_paise=None, dry_run=False):
+    def __init__(self, port, dry_run=False):
         self.port = port
-        self.budget_paise = budget_paise
         self.dry_run = dry_run
         # An attacker's page can POST to this port but cannot read this token,
         # so requiring it on every mutation is what keeps checkout ours.
@@ -229,7 +232,7 @@ class App(object):
                 self.say("warn", "Could not clear the old cart: %s" % exc)
         # Fees vary by address and time of day, so a measurement made at the
         # old address is not evidence about this one.
-        self.planner = CartPlanner(address_id, 0, False, self.budget_paise)
+        self.planner = CartPlanner(address_id, 0, False)
         if had_lines and changed:
             self.say("warn", "Basket cleared - item ids are only valid for the "
                              "address they were found at, so this order starts fresh.")
@@ -255,7 +258,7 @@ class App(object):
 
     def ensure_planner(self):
         if self.planner is None:
-            self.planner = CartPlanner(self.address_id, 0, False, self.budget_paise)
+            self.planner = CartPlanner(self.address_id, 0, False)
         return self.planner
 
     # ------------------------------------------------------------ cart
@@ -278,28 +281,43 @@ class App(object):
             self.planner.fees = fees
             self.planner.fees_measured = True
 
-        warnings.extend(self.unexpected_items(cart))
         return cart, warnings
 
-    def unexpected_items(self, cart):
-        """Flag items in the cart that this session did not put there.
+    def cart_rows(self, cart):
+        """One row per item SWIGGY says is in the cart - not per item we sent.
 
-        Observed live: an item nobody here added appeared mid-session because
-        the same account was being used in the Swiggy app. It would otherwise
-        be paid for silently.
+        These are two different lists, and the difference is the whole point.
+        The bill is computed from the server's cart, so anything in it is
+        being paid for; rendering our own basket instead meant an item added
+        from the phone app was charged for, warned about, and yet had no row
+        and no way to remove it. Observed live: a Laadi Pav worth Rs 69 in a
+        Rs 354 bill, with five rows on screen and six in the cart.
+
+        Rows carry the planner index when the item is ours, so the quantity
+        and remove controls keep working; a row with index None is a stranger
+        and can only be dealt with by rebuilding the cart.
         """
-        ours = set()
-        for line in self.planner.lines:
-            ours.add(line["spinId"])
-        strangers = []
+        rows = []
         for item in (cart.get("items") or []):
-            if item.get("spinId") and item["spinId"] not in ours:
-                strangers.append(item.get("itemName") or item["spinId"])
-        if not strangers:
-            return []
-        return ["%s is in your Swiggy cart but was not added here - it will be "
-                "paid for too. Check the Swiggy app if that is a surprise."
-                % name for name in strangers[:4]]
+            spin, sku = item.get("spinId"), item.get("skuId")
+            line = self.planner.find(spin, sku) if (spin and sku) else None
+            price = parse_paise(item.get("discountedFinalPrice"))
+            if price is None:
+                price = parse_paise(item.get("mrp")) or 0
+            rows.append({
+                "name": ("%s %s" % (item.get("itemName") or "?",
+                                    item.get("itemVariant") or "")).strip(),
+                "price": price,
+                "quantity": int(item.get("quantity", 1) or 1),
+                "image": item.get("imageUrl"),
+                "max_quantity": item.get("maxQuantity") or 99,
+                "ours": line is not None,
+                "index": self.planner.lines.index(line) if line is not None else None,
+                # An item the server is holding but not billing. Never silent:
+                # it is why a total can disagree with the rows above it.
+                "in_stock": item.get("isInStockAndAvailable") is not False,
+            })
+        return rows
 
     def measure_fees(self):
         """One round trip so the running total stops being a guess."""
@@ -320,18 +338,23 @@ class App(object):
                         ("Fees, taxes and delivery",
                          "not priced - a dry run writes no cart"))
             return {
+                "rows": [{"name": l["name"], "price": l["price"],
+                          "quantity": l["quantity"], "image": l.get("image"),
+                          "max_quantity": l.get("maxQuantity") or 99,
+                          "ours": True, "index": i, "in_stock": True,
+                          "billed": True}
+                         for i, l in enumerate(self.planner.lines)],
+                "foreign": [],
+                "strangers_are_free": False,
+                "unbilled_paise": 0,
                 "bill_lines": [("Item total", rupees(status.item_total)), fee_line],
                 "to_pay": status.projected,
-                "projected": status.projected,
-                "drift": False,
                 "warnings": [],
                 "blocked": not status.ok,
                 "gate_message": status.message(),
-                "near_limit": False,
                 "payment_options": self.load_payment_options(),
             }
 
-        projected = self.planner.status().projected
         cart, warnings = self.push_cart()
         to_pay = cart_to_pay(cart)
         if to_pay is None:
@@ -344,15 +367,40 @@ class App(object):
                 for line in ((cart.get("billBreakdown") or {}).get("lineItems") or [])]
         if not bill:
             bill = [("Item total", rupees(cart_item_total(cart)))]
+        rows = self.cart_rows(cart)
+        # Is a stranger actually being charged for? Do not guess - subtract.
+        #
+        # Observed live 2026-08-25: a Laadi Pav sat in items[] with
+        # isInStockAndAvailable true, at the same storeId as everything else,
+        # and was NOT in the Item Total - which came to exactly the client's
+        # own basket. So items[] can list something the bill excludes, and the
+        # in-stock flag does not explain it. Section 1.6 warned that items[]
+        # holds entries the server does not bill; this says the same thing
+        # about cart membership itself.
+        #
+        # Telling someone they are paying Rs 69 they are not is as bad as
+        # hiding it, so the label comes from the difference between what the
+        # cart holds and what the cart bills.
+        billed_total = cart_item_total(cart)
+        rows_total = sum(r["price"] * r["quantity"] for r in rows)
+        foreign = [r for r in rows if not r["ours"]]
+        foreign_total = sum(r["price"] * r["quantity"] for r in foreign)
+        unbilled = rows_total - billed_total
+        strangers_are_free = bool(foreign) and abs(unbilled - foreign_total) < 100
+        for row in rows:
+            row["billed"] = row["in_stock"] and not (
+                strangers_are_free and not row["ours"])
         return {
+            "rows": rows,
+            "foreign": foreign,
+            "strangers_are_free": strangers_are_free,
+            # anything the cart holds but does not bill, beyond the strangers
+            "unbilled_paise": max(0, unbilled - (foreign_total if strangers_are_free else 0)),
             "bill_lines": bill,
             "to_pay": to_pay,
-            "projected": projected,
-            "drift": abs(to_pay - projected) >= 100,
             "warnings": warnings,
             "blocked": to_pay >= CHECKOUT_LIMIT_PAISE or to_pay > self.planner.limit,
             "gate_message": status.message(),
-            "near_limit": 0 < CHECKOUT_LIMIT_PAISE - to_pay <= 10000,
             "payment_options": self.load_payment_options(),
         }
 
@@ -469,13 +517,24 @@ class App(object):
 
     def add_line(self, row, quantity):
         first = not self.planner.lines
+        existing = self.planner.find(row["spinId"], row["skuId"])
+        before = existing["quantity"] if existing else 0
         self.planner.add(row["spinId"], row["skuId"],
                          ("%s %s" % (row["name"], row["variant"])).strip(),
                          row["price"], quantity, row["maxQuantity"], strict=False)
-        # Keep the per-variant cap so the cart's +/- buttons cannot exceed it,
-        # and the photo so the cart can show what was chosen.
-        self.planner.lines[-1]["maxQuantity"] = row["maxQuantity"] or 99
-        self.planner.lines[-1]["image"] = row.get("image")
+        line = self.planner.find(row["spinId"], row["skuId"])
+        if line is not None:
+            # Keep the per-variant cap so the cart's +/- buttons cannot exceed
+            # it, and the photo so the cart can show what was chosen.
+            line["maxQuantity"] = row["maxQuantity"] or 99
+            line["image"] = row.get("image")
+            if existing is not None and line["quantity"] == before:
+                self.say("warn", "%s is already at Swiggy's limit of %d per "
+                                 "order, so nothing was added."
+                         % (row["name"], row["maxQuantity"] or 99))
+            elif existing is not None:
+                self.say("info", "%s was already in your basket - it is now x%d."
+                         % (row["name"], line["quantity"]))
         if first:
             # Fees cannot be known before a cart exists, so price one the
             # instant there is something to price. One round trip here is what
@@ -588,6 +647,7 @@ class Handler(BaseHTTPRequestHandler):
             ("GET", "/cart"): self.view_cart,
             ("POST", "/cart/qty"): self.act_qty,
             ("POST", "/cart/remove"): self.act_remove,
+            ("POST", "/cart/rebuild"): self.act_rebuild,
             ("POST", "/payment"): self.act_payment,
             ("GET", "/confirm"): self.view_confirm,
             ("POST", "/checkout"): self.act_checkout,
@@ -777,6 +837,10 @@ class Handler(BaseHTTPRequestHandler):
             app.say("warn", "Type what you need first.")
             raise Redirect("/")
 
+        # Detection is by phrasing: "I want to make ...", "recipe for ...".
+        # A bare dish name ("bread omelette") carries no verb and reads exactly
+        # like a product name, so it stays a product search - name the dish in
+        # a sentence to get ingredients.
         if recipe.available() and recipe.is_recipe_request(text):
             try:
                 lines = recipe.expand(text)
@@ -812,10 +876,32 @@ class Handler(BaseHTTPRequestHandler):
         return web_ui.review_page(app.ctx(), app.parsed)
 
     def act_review(self, form, query):
-        """Search every confirmed line; queue whatever needs a human choice."""
+        """Search every confirmed line; queue whatever needs a human choice.
+
+        First, though: anything typed into "anything missing" is parsed and
+        added to the list, and the screen comes back so the additions are
+        echoed too. A suggested list is often nearly right, and re-typing the
+        whole thing to add one item would be silly.
+        """
         app = self.app
         if not app.parsed:
             raise Redirect("/")
+
+        extra = (form.get("add") or "").strip()
+        if extra:
+            more = parse_order(extra)
+            if more:
+                app.parsed = list(app.parsed) + more
+                # Say it out loud. Either button lands here when the box has
+                # text, so someone who typed and pressed "Yes, find these"
+                # needs to know why they are back on the same screen.
+                app.say("ok", "Added to the list - check it, then confirm.")
+            else:
+                app.say("warn", "Could not pick any items out of %r - try "
+                                "\"name + size\", like \"200 g ice cream\"."
+                        % extra[:60])
+            raise Redirect("/review")
+
         requests, app.parsed = app.parsed, []
         app.suggested_from = None
         app.ensure_planner()
@@ -928,6 +1014,28 @@ class Handler(BaseHTTPRequestHandler):
         lines = app.planner.lines if app.planner else []
         if 0 <= index < len(lines):
             lines.pop(index)
+        raise Redirect("/cart")
+
+    def act_rebuild(self, form, query):
+        """Empty the cart on Swiggy's side, then write back only our basket.
+
+        This exists because update_cart did not evict a stranger: the docs say
+        it replaces the whole cart, and live it kept an item added from the
+        phone app anyway (field notes 1.7). clear_cart is the only other lever
+        there is. If the item returns, something else is writing to the
+        account right now - which is worth knowing rather than fighting.
+        """
+        app = self.app
+        if app.dry_run:
+            raise Redirect("/cart")
+        try:
+            guard(app.mcp().call_tool("clear_cart", {}), "clear_cart")
+        except McpError as exc:
+            app.say("bad", "Could not empty the cart: %s" % exc)
+            raise Redirect("/cart")
+        if app.planner.lines:
+            app.push_cart()
+        app.say("ok", "Cart rebuilt from your basket alone.")
         raise Redirect("/cart")
 
     def act_payment(self, form, query):
@@ -1105,44 +1213,156 @@ def _split_city_and_pin(parts):
     return city, postal
 
 
+def _lsof(port):
+    """PIDs listening on a TCP port, via lsof. Empty if lsof is unavailable."""
+    for binary in ("lsof", "/usr/sbin/lsof"):
+        try:
+            out = subprocess.check_output(
+                [binary, "-nP", "-tiTCP:%d" % port, "-sTCP:LISTEN"],
+                stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        return [int(pid) for pid in out.split() if pid.strip().isdigit()]
+    return []
+
+
+def stale_instance(port):
+    """PID of an EARLIER COPY OF THIS APP holding the port, or None.
+
+    Restarting is the normal way to pick up a change, and a leftover instance
+    makes the new one die at bind time with a message that scrolls past. The
+    symptom is baffling: no browser opens and the page still shows the old
+    code, because the old server is the one answering.
+
+    Only ever matches this program. Anything else on the port is somebody
+    else's business and is reported rather than killed.
+    """
+    for pid in _lsof(port):
+        if pid == os.getpid():
+            continue
+        try:
+            command = subprocess.check_output(
+                ["ps", "-o", "command=", "-p", str(pid)],
+                stderr=subprocess.DEVNULL).decode("utf-8", "replace")
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        if os.path.basename(__file__).split(".")[0] in command:
+            return pid
+    return None
+
+
+def port_free(port):
+    """Can we actually bind it? The only test that means anything.
+
+    lsof reporting no listener is not the same thing: after the old process
+    dies its socket can linger a moment, and bind still fails with EADDRINUSE.
+    Binding a throwaway socket is the real answer - and since it never listens
+    or connects, closing it leaves nothing in TIME_WAIT.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def replace_stale_instance(port, wait=5.0):
+    """Stop our own leftover server so this one can bind. True if the port is free."""
+    pid = stale_instance(port)
+    if pid is None:
+        return False
+    print("An older copy of this app (pid %d) still holds port %d - stopping it."
+          % (pid, port))
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        print("  could not stop it: %s" % exc)
+        return False
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if port_free(port):
+            return True
+        time.sleep(0.2)
+    return port_free(port)
+
+
+def open_browser(url):
+    """Open the app in a browser, and report honestly if we could not.
+
+    On macOS the stdlib picks MacOSXOSAScript, which drives the browser over
+    AppleScript - and that does nothing at all, silently, unless the terminal
+    running this has been granted Automation permission. /usr/bin/open goes
+    through Launch Services instead, needs no permission, and is what actually
+    works. Try it first, keep webbrowser as the fallback elsewhere, and never
+    swallow the failure: the URL is the one thing the user needs.
+    """
+    if sys.platform == "darwin" and os.path.exists("/usr/bin/open"):
+        try:
+            if subprocess.call(["/usr/bin/open", url]) == 0:
+                return True
+        except OSError:
+            pass
+    try:
+        return bool(webbrowser.open(url))
+    except Exception:
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(description="Web UI for Instamart ordering")
     ap.add_argument("--port", type=int, default=swiggy_auth.REDIRECT_PORT,
                     help="port to serve on (default %d)" % swiggy_auth.REDIRECT_PORT)
-    ap.add_argument("--budget", type=float, default=None,
-                    help="your own ceiling in rupees (capped at the Rs 999 payable max)")
     ap.add_argument("--dry-run", action="store_true",
                     help="walk the whole UI without writing the cart or ordering")
     ap.add_argument("--no-browser", action="store_true",
                     help="do not open a browser window")
     args = ap.parse_args()
 
-    budget_paise = int(round(args.budget * 100)) if args.budget else None
-    Handler.app = App(args.port, budget_paise, args.dry_run)
+    Handler.app = App(args.port, args.dry_run)
 
     # 127.0.0.1, not 0.0.0.0: this holds a live payment-capable session and has
     # no login of its own, so it must not be reachable from the network.
     try:
         server = HTTPServer(("127.0.0.1", args.port), Handler)
-    except OSError as exc:
-        print("Cannot listen on 127.0.0.1:%d - %s" % (args.port, exc))
-        print("Something else is using it (the CLI's login server uses %d too)."
-              % swiggy_auth.REDIRECT_PORT)
-        return 1
+    except OSError:
+        # Nearly always our own previous run. Take the port over rather than
+        # exiting with a message that scrolls away while the old code keeps
+        # serving the browser.
+        if replace_stale_instance(args.port):
+            try:
+                server = HTTPServer(("127.0.0.1", args.port), Handler)
+            except OSError as exc:
+                print("Port %d is still busy: %s" % (args.port, exc))
+                return 1
+        else:
+            print("Cannot listen on 127.0.0.1:%d - something else is using it."
+                  % args.port)
+            print("That something is not this app. The CLI's login server uses "
+                  "%d too." % swiggy_auth.REDIRECT_PORT)
+            print("Find it with:  lsof -nP -iTCP:%d -sTCP:LISTEN" % args.port)
+            print("Or pick another port:  python3 %s --port 9000"
+                  % os.path.basename(__file__))
+            return 1
+
+    # Line-buffered by default only when stdout is a terminal; redirect this
+    # to a file and the startup banner would sit in a buffer for the lifetime
+    # of the server, making a log look like a silent failure.
+    def say(line):
+        print(line)
+        sys.stdout.flush()
 
     url = "http://127.0.0.1:%d/" % args.port
-    print("%s is running at %s" % (web_ui.BRAND, url))
+    say("%s is running at %s" % (web_ui.BRAND, url))
     if args.dry_run:
-        print("DRY RUN - the cart is never written and no order can be placed.")
-    if budget_paise:
-        print("Ceiling for this session: %s" % rupees(budget_paise))
-    print("Sessions are stored under %s, never in this folder." % swiggy_auth.TOKEN_DIR)
-    print("Press Ctrl-C to stop.")
-    if not args.no_browser:
-        try:
-            webbrowser.open(url)
-        except Exception:
-            pass
+        say("DRY RUN - the cart is never written and no order can be placed.")
+    say("Sessions are stored under %s, never in this folder." % swiggy_auth.TOKEN_DIR)
+    say("Press Ctrl-C to stop.")
+    if not args.no_browser and not open_browser(url):
+        say("Could not open a browser for you - open %s yourself." % url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

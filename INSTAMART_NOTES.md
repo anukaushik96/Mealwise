@@ -159,6 +159,40 @@ the session. The cart is shared live state and your writes can be raced.
 Always re-read `get_cart` after writing, and verify the contents are what you
 expect before checking out.
 
+**Seen again 2026-08-25, and it survived the replace.** A "NOICE Bombay Laadi
+Pav ₹69" was in `get_cart` *after* an `update_cart` that did not include it —
+so "replaces the entire cart" did not evict it. `clear_cart` followed by
+`update_cart` is the only other lever available.
+
+**The consequence for any UI: render the cart you were given, not the cart you
+sent.** They are different lists. A screen built from the client's own basket
+shows five rows while the cart holds six, and offers no way to remove the
+sixth — the user sees rows that do not reconcile with the total and has no
+idea why.
+
+### 1.7.1 `items[]` can hold something the bill excludes, and the stock flag does not explain it
+> **Belief that broke:** *an item in `items[]` is an item you are paying for*
+**Wrong — and I asserted it in this file for an hour before checking.** The
+same Laadi Pav, measured directly:
+
+```
+items[]:  NOICE Bombay Laadi Pav   x1  ₹69   isInStockAndAvailable: true   storeId 1403139
+          The Health Factory Bread x1  ₹55   isInStockAndAvailable: true   storeId 1403139
+sum of items[]                          ₹124
+billBreakdown "Item Total"              ₹55        <- the pav is not in it
+cartTotalAmount                         ₹126       <- 55 + 12 + 20 + 30 + 9
+```
+
+So `items[]` listed it, the stock flag said it was available, both items were
+at the **same** `storeId` (so this is not the multi-store split of §8), and the
+bill simply did not include it. §1.6 says `items[]` holds entries the server
+does not bill and blames out-of-stock or another session; neither applies here.
+
+**Do not label an item billed or unbilled from any per-item field — subtract.**
+`sum(items[]) − Item Total` is the only figure that says what is being left
+out. Claiming a charge that is not there is as wrong as hiding one: this UI
+told a user they were paying ₹69 they were not.
+
 ### 1.8 Never hardcode the free-delivery threshold
 > **Belief that broke:** *The free-delivery threshold is ₹259*
 **Refined by measurement, and then: never hardcode it.** Delivery was FREE at

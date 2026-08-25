@@ -42,15 +42,16 @@ itself. The session lasts 5 days, so you are not asked again until it expires.
 | `python3 order_instamart.py --logout` | Sign out |
 | `python3 probe_instamart.py` | Read-only diagnostics: dump every tool's raw response |
 
-`--dry-run` and `--budget` work the same way on `web_app.py`.
+`--dry-run` works the same way on `web_app.py`. There is no `--budget` there:
+the ceiling is Swiggy's own ₹1000 refusal, and it is mentioned only when a
+cart actually breaches it.
 
 ## The web UI
 
 ```bash
 python3 web_app.py                 # opens your browser at 127.0.0.1:8765
 python3 web_app.py --dry-run       # walk everything; never writes, never orders
-python3 web_app.py --budget 500    # your own ceiling, under the ₹999 max
-python3 web_app.py --port 9000      # if 8765 is taken
+python3 web_app.py --port 9000     # if 8765 is taken
 ```
 
 Sign in once with your phone number and OTP, then:
@@ -77,7 +78,7 @@ Sign in once with your phone number and OTP, then:
 
 ### Describing a dish instead of listing items
 
-Type `I want to make a mango smoothie` and you get back
+Say `I want to make a mango smoothie` and you get back
 `2 pieces mango, 500 ml milk, 400 g curd, 250 g honey` — shop pack sizes, not
 recipe amounts — on the same confirmation screen as anything you type
 yourself. Nothing is searched until you say yes.
@@ -101,9 +102,12 @@ so the standard-library-only promise still holds.
 
 Three things worth knowing:
 
-- **The model is only consulted when you describe rather than list.**
+- **The model is only consulted when you phrase it as a request.**
   `1 litre milk` never leaves your machine; `make me a smoothie` does. The
-  test suite asserts this both ways.
+  trigger is the verb — *make*, *cook*, *recipe for*, *what do I need for* —
+  so a bare dish name like `bread omelette` is searched as a product instead.
+  Name the dish in a sentence to get ingredients. The test suite asserts this
+  both ways.
 - **Only the dish phrase is sent.** Not your address, cart, order history or
   account number — asserted in the tests, and the whole request payload is
   built in one function in `recipe.py` so you can check it yourself.
@@ -194,9 +198,11 @@ at Swiggy's end; the token stays valid until it expires.
   than in groceries. The app measures the real fee on your first item and
   keeps the running total honest.
 - **Refuses what Swiggy would refuse.** Instamart rejects orders at ₹1000 or
-  above. You are told while shopping, not at checkout, and told exactly how
-  much to remove. If a surge fee later pushes the real total over the line,
-  the cart says so and the checkout button goes away.
+  above, so an item that would breach it is refused as you add, with the exact
+  amount to remove. Nothing about the limit is shown until it is in the way -
+  no meter, no ceiling, no "you are getting close". If a surge fee later
+  pushes the real total over the line, the cart says so and the checkout
+  button goes away.
 - **Never orders without you.** Placing an order needs the exact amount shown
   and the word `yes` typed in full.
 
