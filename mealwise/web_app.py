@@ -26,7 +26,6 @@ docs/instamart-notes.md for what hosting this would actually require.
 
 import argparse
 import os
-import re
 import secrets
 import signal
 import socket
@@ -60,36 +59,6 @@ MAX_VARIANTS_SHOWN = 8
 UPI_POLL_SECONDS = 300      # the documented cap on a pending UPI payment
 EXACT = 1e-6                # a rank score this small is an exact size match
 PACKAGE = __package__ or "mealwise"   # how this program appears in a ps line
-
-# Everything from the first bracketed instruction or warning sign onward is
-# addressed to the renderer, not the reader.
-_AGENT_ASIDE = re.compile(r"\[IMPORTANT|\u26a0")
-_ORDER_ID_CLAUSE = re.compile(r"\s*Order ID:\s*\S+", re.I)
-_LEADING_NOISE = re.compile(r"^[^\w]+", re.UNICODE)
-
-
-def human_message(text, headline):
-    """The part of a tool's prose worth showing a person, or "".
-
-    Swiggy's success line is written for an LLM agent driving a chat, not for
-    a page: it carries bracketed orders to the renderer ("Display the above
-    message exactly as-is") and a warning that a rich widget may repeat the
-    data. Those are directions, not information. This page IS that widget -
-    it shows the order id, status and total in a table - so printing the
-    prose verbatim shows the user instructions meant for the machine, and
-    then repeats what the table already said.
-
-    What survives: whatever the message adds beyond the headline and the
-    table. Usually a sentence like "Sit back and enjoy!", sometimes nothing.
-    """
-    text = _AGENT_ASIDE.split((text or "").strip(), 1)[0]
-    text = _ORDER_ID_CLAUSE.sub("", text)
-    # Drop a leading restatement of the headline - emoji, spaces and
-    # punctuation aside, since the prose opens with a party popper.
-    text = _LEADING_NOISE.sub("", text)
-    if text.lower().startswith(headline.lower()):
-        text = text[len(headline):]
-    return _LEADING_NOISE.sub("", text).strip()
 
 
 class Redirect(Exception):
@@ -1203,16 +1172,17 @@ class Handler(BaseHTTPRequestHandler):
                 "Swiggy has the order but the payment is not settled. Check the "
                 "Swiggy app if you have already approved it.")
         else:
-            # The docs ask for the tool's own success line to be shown as-is,
-            # but that line is addressed to an agent - see human_message.
+            # The docs ask for the tool's own success line to be shown as-is.
             headline = "Instamart order placed successfully"
-            detail = human_message(order.get("message"), headline)
+            detail = order.get("message") or ""
         return web_ui.placed_page(app.ctx(), {
             "headline": headline,
             "detail": detail[:300],
             "order_id": order.get("order_id"),
             "status": order.get("status"),
             "total": order.get("total"),
+            "track": ("track_order(orderId=%s)" % order["order_id"]
+                      if order.get("order_id") else None),
         })
 
     def view_pending(self, form, query):
