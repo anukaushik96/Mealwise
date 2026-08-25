@@ -54,3 +54,41 @@ class OtherShapes(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class TheTrackFooter(unittest.TestCase):
+    """`Track it with track_order(orderId=...)` was an MCP tool signature.
+
+    A person cannot call it - there is no CLI, and the page offers no
+    tracking of its own - so it was machine-facing text on a screen meant
+    for a human.
+    """
+
+    def page(self):
+        from mealwise import web_ui
+        ctx = {"nonce": "N", "address_label": "Home", "flash": [],
+               "dry_run": False, "signed_in": True, "display_name": "A",
+               "payment": None}
+        return web_ui.placed_page(ctx, {
+            "headline": "Instamart order placed successfully",
+            "detail": "\U0001F389 Instamart order placed successfully! "
+                      "Sit back and enjoy!",
+            "order_id": "246629482120009", "status": "CONFIRMED",
+            "total": 48400})
+
+    def test_the_signature_is_gone(self):
+        html = self.page()
+        self.assertNotIn("track_order", html)
+        self.assertNotIn("Track it with", html)
+        self.assertNotIn("orderId=", html)
+
+    def test_the_rest_of_the_page_is_intact(self):
+        html = self.page()
+        for kept in ("Instamart order placed successfully", "Sit back and enjoy!",
+                     "246629482120009", "CONFIRMED", "Start another order"):
+            self.assertIn(kept, html, kept)
+
+    def test_no_format_placeholder_is_left_behind(self):
+        body = self.page().split("</style>")[-1]
+        self.assertNotIn("%s", body)
+        self.assertNotIn("%d", body)

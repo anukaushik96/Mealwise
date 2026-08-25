@@ -1215,8 +1215,6 @@ class Handler(BaseHTTPRequestHandler):
             "order_id": order.get("order_id"),
             "status": order.get("status"),
             "total": order.get("total"),
-            "track": ("track_order(orderId=%s)" % order["order_id"]
-                      if order.get("order_id") else None),
         })
 
     def view_pending(self, form, query):
