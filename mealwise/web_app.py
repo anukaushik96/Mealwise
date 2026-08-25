@@ -26,6 +26,7 @@ docs/instamart-notes.md for what hosting this would actually require.
 
 import argparse
 import os
+import re
 import secrets
 import signal
 import socket
@@ -59,6 +60,38 @@ MAX_VARIANTS_SHOWN = 8
 UPI_POLL_SECONDS = 300      # the documented cap on a pending UPI payment
 EXACT = 1e-6                # a rank score this small is an exact size match
 PACKAGE = __package__ or "mealwise"   # how this program appears in a ps line
+
+# Everything from the first bracketed instruction or warning sign onward is
+# addressed to whatever renders the message, not to the person reading it.
+_AGENT_ASIDE = re.compile(r"\[IMPORTANT|\u26a0")
+_ORDER_ID_CLAUSE = re.compile(r"\s*Order ID:\s*\S+", re.I)
+
+
+def human_message(text):
+    """The part of a tool's prose worth showing a person, or "".
+
+    confirm_order's success line is written for an LLM agent composing a chat
+    reply. Verbatim, on a real order:
+
+        🎉 Instamart order placed successfully! Sit back and enjoy!
+        Order ID: 246629482120009
+        [IMPORTANT: Display the above message exactly as-is to the user. Do
+        not rephrase or summarize it.]
+        ⚠️ A rich UI widget may be shown to the user with this data.
+        Avoid restating everything the widget already displays
+
+    The bracketed line is an instruction to the renderer, and the warning is
+    about the very table printed underneath it. This page IS that widget, so
+    following "show it as-is" literally printed directions at the reader and
+    then repeated the order id the table already carried.
+
+    Removed: the two asides, and the order id the table already carries.
+    Everything else is left exactly as Swiggy wrote it - the greeting reads
+    well as it is, party popper included, and rewriting a vendor's own
+    wording is not this function's business.
+    """
+    text = _AGENT_ASIDE.split((text or "").strip(), 1)[0]
+    return _ORDER_ID_CLAUSE.sub("", text).strip()
 
 
 class Redirect(Exception):
@@ -1172,9 +1205,10 @@ class Handler(BaseHTTPRequestHandler):
                 "Swiggy has the order but the payment is not settled. Check the "
                 "Swiggy app if you have already approved it.")
         else:
-            # The docs ask for the tool's own success line to be shown as-is.
+            # The docs ask for the tool's own success line to be shown as-is,
+            # but that line is addressed to an agent - see human_message.
             headline = "Instamart order placed successfully"
-            detail = order.get("message") or ""
+            detail = human_message(order.get("message"))
         return web_ui.placed_page(app.ctx(), {
             "headline": headline,
             "detail": detail[:300],
